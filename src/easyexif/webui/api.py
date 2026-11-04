@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import __version__
 from .. import batch as batchmod
 from ..batch import BUILTIN_PROFILES, Profile, export_csv, iter_images, rename, sort_into, apply_template
 from ..metadata import MetadataError, preview_value
@@ -35,7 +36,7 @@ class Api:
     def dispatch(self, method: str, path: str, query: dict[str, str], body: dict) -> Response:
         try:
             if method == "GET" and path == "/api/health":
-                return json_response({"ok": True, "version": "0.1.0"})
+                return json_response({"ok": True, "version": __version__})
             if method == "GET" and path == "/api/doc":
                 return json_response({"ok": True, "doc": self.session.doc()})
             if method == "POST" and path == "/api/open":

@@ -1,4 +1,4 @@
-"""Originality / consistency checks for camera originals.
+"""Originality / consistency checks for photo metadata.
 
 Each test returns one of Missing / Pass / Uncertain / Suspect / Fail.  The
 checks are evidence based heuristics, not a cryptographic proof that a file is
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .jpeg import Jpeg
+from .jpeg import MPF_HEADER, Jpeg
 from .metadata import Metadata, MetadataError, parse_exif_datetime
 from .tags import rational_to_float
 
@@ -44,6 +44,14 @@ RATING_TEXT = {
     4: "未发现明显编辑痕迹，可能是来自未知型号相机的原图",
     5: "通过全部原始性检测，极可能为相机原图",
 }
+
+DISCLAIMER = (
+    "本报告是基于文件结构、软件字段和元数据一致性的启发式检查，"
+    "不能证明图像未经编辑，也不能作为司法鉴定或取证结论。"
+    "文件可能被有意清洗或伪造；相机固件、手机系统、社交平台写入的正常字段"
+    "也可能造成误报或漏报。1–5 级仅表示证据强弱：5 级不代表绝对原图，"
+    "1 级也不代表一定篡改。"
+)
 
 
 def _has_editor(meta: Metadata) -> bool:
@@ -114,14 +122,15 @@ class Report:
         rating = ("%d 级" % self.score) if self.score is not None else "未知"
         return {"path": self.path, "available": self.available,
                 "score": self.score, "rating": rating,
-                "summary": self.summary,
+                "summary": self.summary, "disclaimer": DISCLAIMER,
                 "checks": [c.to_dict() for c in self.checks]}
 
     def render(self) -> str:
+        lines = [DISCLAIMER, ""]
         if self.score is None:
-            lines = ["原图可信度: 未知  %s" % self.summary, ""]
+            lines.extend(["原图可信度: 未知  %s" % self.summary, ""])
         else:
-            lines = ["原图可信度: %d 级  %s" % (self.score, self.summary), ""]
+            lines.extend(["原图可信度: %d 级  %s" % (self.score, self.summary), ""])
         width = max((len(c.title) for c in self.checks), default=10)
         for c in self.checks:
             lines.append("%-*s  %-10s %s" % (width, c.title, c.status, c.detail))
@@ -183,6 +192,30 @@ def _check_structure(report: Report, meta: Metadata, data: bytes) -> None:
         report.add("exif", "EXIF 格式检验", PASS, "EXIF 结构完整，关键标签齐全")
 
 
+def _looks_like_camera_software(meta: Metadata, text: str) -> bool:
+    """Recognise firmware strings that cameras write into Software.
+
+    A camera firmware value is not evidence of a third-party editor.  Match
+    the body model first, then common firmware spellings and camera model
+    prefixes.  The check stays conservative: unknown values still become
+    Uncertain, just like before.
+    """
+    low = text.strip().lower()
+    if not low:
+        return False
+    make = meta.get_text("IFD0.Make", "").strip().lower()
+    model = meta.get_text("IFD0.Model", "").strip().lower()
+    if model and model in low:
+        return True
+    if make and make in low and re.search(r"\b(?:firmware|ver\.?|version)\b", low):
+        return True
+    if re.search(r"\b(?:firmware|ver\.?|version)\s*[:\-]?\s*\d", low):
+        return True
+    if re.search(r"\b(?:ilce|dsc|eos|nikon|finepix|om-d|e-m|gx|gh|dc-)[-_ ]?[a-z0-9]", low):
+        return True
+    return False
+
+
 def _check_software(report: Report, meta: Metadata, data: bytes) -> None:
     hits: list[str] = []
     for ifd, tag, label in (("IFD0", 0x0131, "Software"), ("IFD0", 0x000B, "ProcessingSoftware"),
@@ -213,11 +246,20 @@ def _check_software(report: Report, meta: Metadata, data: bytes) -> None:
             hits.append("发现字符串 %s" % name)
             break
     known = [h for h in hits if any(tok.lower() in h.lower() for tok, _ in SOFTWARE_TRACES)]
-    unknown = [h for h in hits if h not in known]
+    firmware = [h for h in hits
+                if h not in known
+                and h.startswith(("Software=", "ProcessingSoftware=",
+                                  "HostComputer=", "XMP CreatorTool="))
+                and _looks_like_camera_software(meta, h.split("=", 1)[1])]
+    unknown = [h for h in hits if h not in known and h not in firmware]
     if known:
         report.add("software", "第三方软件数据", FAIL,
                    "当前图像曾被以下软件修改: "
                    + "; ".join(dict.fromkeys(known))[:300], list(dict.fromkeys(known)))
+    elif firmware and not unknown:
+        report.add("software", "第三方软件数据", PASS,
+                   "发现相机固件字段，不构成第三方编辑证据: "
+                   + "; ".join(dict.fromkeys(firmware))[:240], firmware)
     elif unknown:
         report.add("software", "第三方软件数据", UNCERTAIN,
                    "存在软件/主机字段但不在已知编辑器特征库中: "
@@ -381,22 +423,43 @@ def _check_mpf(report: Report, meta: Metadata) -> None:
         report.add("mpf", "MPF 数据信度", PASS, "没有 MPF；单图 JPEG 不构成异常")
         return
     if "error" in mpf:
-        report.add("mpf", "MPF 数据信度", FAIL, "MPF 结构损坏: %s" % mpf["error"])
+        # A malformed MPF header is a structure problem, not proof that the
+        # image was edited.  Keep it distinct from an image edit finding.
+        report.add("mpf", "MPF 数据信度", UNCERTAIN,
+                   "MPF 结构无法完整解析: %s" % mpf["error"])
         return
+    images = mpf.get("images", [])
+    base = int(mpf.get("base_offset") or 0)
     issues = []
-    for img in mpf.get("images", []):
-        if img["offset"] + img["size"] > meta.raw_size:
+    parse_issue = False
+    # MP Entry offsets are relative to the MP Endian field.  Some writers
+    # use the MP Header start for the first image instead, so accept either
+    # base when checking the file bounds.
+    bases = {base}
+    if base >= len(MPF_HEADER):
+        bases.add(base - len(MPF_HEADER))
+    for img in images:
+        offset = int(img.get("offset") or 0)
+        size = int(img.get("size") or 0)
+        valid = any(0 <= b + offset and b + offset + size <= meta.raw_size
+                    for b in bases)
+        if not valid:
             issues.append("MPF 图像偏移/长度越过文件末尾")
             break
     declared = mpf.get("declared_images")
-    if declared is not None and declared != len(mpf.get("images", [])):
-        issues.append("声明 %s 张图像但解析到 %d 条 MP Entry"
-                      % (declared, len(mpf.get("images", []))))
+    if declared is not None and declared != len(images):
+        if declared <= 0 or declared > 1000:
+            issues.append("MPF 声明图像数异常 (%s)，可能是解析错误" % declared)
+            parse_issue = True
+        else:
+            issues.append("声明 %s 张图像但解析到 %d 条 MP Entry"
+                          % (declared, len(images)))
     if issues:
-        report.add("mpf", "MPF 数据信度", SUSPECT, "; ".join(issues), issues)
+        status = UNCERTAIN if parse_issue else SUSPECT
+        report.add("mpf", "MPF 数据信度", status, "; ".join(issues), issues)
     else:
         report.add("mpf", "MPF 数据信度", PASS,
-                   "MPF 版本 %s，共 %d 张关联图像" % (mpf.get("version"), len(mpf.get("images", []))))
+                   "MPF 版本 %s，共 %d 张关联图像" % (mpf.get("version"), len(images)))
 
 
 def _check_flashpix(report: Report, meta: Metadata) -> None:
@@ -422,9 +485,11 @@ def _check_legacy(report: Report, meta: Metadata, data: bytes) -> None:
         if marker in lower:
             hits.append("文件字节中出现 %s 标识" % label)
     if hits:
-        report.add("legacy", "旧版编辑器遗留数据", FAIL, "; ".join(hits), hits)
+        report.add("legacy", "其他编辑器痕迹", FAIL,
+                   "发现其他编辑器写入的标记: " + "; ".join(hits), hits)
     else:
-        report.add("legacy", "旧版编辑器遗留数据", PASS, "未发现旧版编辑器遗留数据")
+        report.add("legacy", "其他编辑器痕迹", PASS,
+                   "未发现 ExifTool、Exif Editor 等其他编辑器写入的标记")
 
 
 def _check_histogram(report: Report, meta: Metadata, path: str) -> None:

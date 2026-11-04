@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .. import __version__
 from .api import Api, Response
 from .paths import static_dir
 
@@ -18,7 +19,7 @@ LOG = logging.getLogger("easyexif.webui")
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "EasyExif/0.1"
+    server_version = "EasyExif/" + __version__
 
     def do_GET(self):
         self._handle("GET")

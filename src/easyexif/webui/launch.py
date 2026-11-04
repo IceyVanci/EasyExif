@@ -8,6 +8,7 @@ import os
 import secrets
 import sys
 
+from .. import __version__
 from .api import Api
 from .paths import data_dir
 from .server import WebUIServer
@@ -43,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         from .dialog_helper import main as helper_main
         return helper_main(argv[1:])
     parser = argparse.ArgumentParser(prog="easyexif-webui")
+    parser.add_argument("--version", action="version", version="EasyExif %s" % __version__)
     parser.add_argument("file", nargs="?")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--port", type=int, default=0)

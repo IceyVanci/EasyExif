@@ -1,11 +1,12 @@
 """EXIF / TIFF tag registry and human readable value formatting.
 
-The tables below cover the most commonly edited tags (IFD0, ExifIFD, GPS,
-Interop) plus a curated set of vendor tags.
+The tables below cover the tags most often used in photo metadata
+(IFD0, ExifIFD, GPS, Interop) plus a curated set of vendor tags.
 Unknown tags are still preserved losslessly by easyexif.tiff.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -416,6 +417,35 @@ def _fmt_apex_shutter(v: Any) -> str:
     return ("1/%d s" % round(1 / t)) if t and t < 1 else ("%g s" % t)
 
 
+# Tags whose stored value is an APEX / EV technical value.  The user-facing
+# editors work with the natural value (F number or seconds) instead.
+TECHNICAL_TAGS = frozenset({0x9201, 0x9202, 0x9203, 0x9205})
+
+
+def is_technical(ifd: str, tag: int) -> bool:
+    return ifd == "EXIF" and tag in TECHNICAL_TAGS
+
+
+def fnumber_to_apex(fnumber: float) -> float:
+    """Convert an F number (2.8) to the EXIF APEX aperture value."""
+    return 2.0 * math.log2(fnumber)
+
+
+def seconds_to_apex_shutter(seconds: float) -> float:
+    """Convert an exposure time in seconds to the APEX shutter value."""
+    return -math.log2(seconds)
+
+
+def technical_value(ifd: str, tag: int, value: Any) -> str | None:
+    """Return the APEX representation for technical tags, else None."""
+    if not is_technical(ifd, tag):
+        return None
+    apex = rational_to_float(value)
+    if apex is None:
+        return None
+    return "APEX %g" % apex
+
+
 def _fmt_distance(v: Any) -> str:
     f = rational_to_float(v)
     return ("%g m" % f) if f is not None else str(v)
@@ -618,14 +648,14 @@ ZH_NAMES = {
     "ExifVersion": "EXIF 版本", "FlashpixVersion": "FlashPix 版本",
     "ExifIFDPointer": "EXIF 子目录偏移量", "GPSInfoIFDPointer": "GPS 子目录偏移量",
     "InteroperabilityIFDPointer": "互操作子目录偏移量",
-    "ExposureTime": "曝光时间", "FNumber": "光圈值", "ExposureProgram": "曝光程序",
+    "ExposureTime": "快门时间", "FNumber": "光圈 F 数", "ExposureProgram": "曝光程序",
     "ISOSpeedRatings": "感光度", "PhotographicSensitivity": "感光度",
     "SensitivityType": "感光度类型", "RecommendedExposureIndex": "推荐曝光指数",
     "DateTimeOriginal": "拍摄时间", "DateTimeDigitized": "数字化时间",
     "OffsetTime": "时区", "OffsetTimeOriginal": "原始时区",
-    "ShutterSpeedValue": "快门速度", "ApertureValue": "光圈",
-    "BrightnessValue": "亮度", "ExposureBiasValue": "曝光补偿",
-    "MaxApertureValue": "最大光圈", "MeteringMode": "测光模式",
+    "ShutterSpeedValue": "快门 APEX（技术）", "ApertureValue": "光圈 APEX（技术）",
+    "BrightnessValue": "亮度 APEX（技术）", "ExposureBiasValue": "曝光补偿",
+    "MaxApertureValue": "最大光圈 APEX（技术）", "MeteringMode": "测光模式",
     "LightSource": "光源", "Flash": "闪光灯", "FocalLength": "镜头焦距",
     "SubjectArea": "主体区域", "UserComment": "用户注释",
     "FocalPlaneXResolution": "焦平面水平分辨率",
@@ -749,8 +779,8 @@ TAG_HELP: dict[str, tuple[str, str]] = {
     "DateTime": ("文件最后修改时间，格式固定。", "YYYY:MM:DD HH:MM:SS，例如 2026:01:02 15:30:00"),
     "Rating": ("星级评分，Windows 资源管理器会读取。", "0 到 5 的整数"),
     "RatingPercent": ("百分比评分。", "0 到 100 的整数"),
-    "ExposureTime": ("快门开启时间，单位秒。", "分数或小数，例如 1/250 或 0.008"),
-    "FNumber": ("镜头光圈 F 数。28/10 表示 F2.8。", "分数或小数，例如 28/10 或 2.8"),
+    "ExposureTime": ("快门时间（自然值，单位秒）。输入 1/500 或 0.002；不会按 APEX 解析。", "分数或小数，例如 1/500、0.002 或 2s"),
+    "FNumber": ("镜头光圈 F 数（自然值）。输入 3.5 表示 f/3.5；若文件中已有 ApertureValue，会同步为对应的 APEX 值。", "F 数，例如 3.5 或 f/3.5"),
     "ExposureProgram": ("相机使用的曝光程序。", "整数代码；可直接点选常用值"),
     "ISOSpeedRatings": ("拍摄感光度。", "整数，例如 100、400、3200"),
     "SensitivityType": ("ISO 灵敏度的定义方式。", "整数代码；可直接点选常用值"),
@@ -761,11 +791,11 @@ TAG_HELP: dict[str, tuple[str, str]] = {
     "DateTimeDigitized": ("图像数字化时间，通常与拍摄时间一致。", "YYYY:MM:DD HH:MM:SS"),
     "OffsetTime": ("修改时间对应的 UTC 偏移。", "±HH:MM，例如 +08:00"),
     "OffsetTimeOriginal": ("拍摄时间对应的 UTC 偏移。", "±HH:MM，例如 +08:00"),
-    "ShutterSpeedValue": ("APEX 快门速度值；8/1 约等于 1/256 秒。", "APEX 分数，例如 7965784/1000000"),
-    "ApertureValue": ("APEX 光圈值；297/100 约等于 F2.8。", "APEX 分数，例如 297/100"),
-    "BrightnessValue": ("APEX 亮度值，可正可负，0 表示中等亮度。", "有符号分数或小数，例如 -4196/2560 或 -1.64"),
-    "ExposureBiasValue": ("曝光补偿，单位 EV。", "有符号分数或小数，例如 -1/3、1/2、0"),
-    "MaxApertureValue": ("镜头最大光圈对应的 APEX 值。", "APEX 分数，例如 3/1"),
+    "ShutterSpeedValue": ("技术字段：APEX 快门速度，只读。正常编辑请在 ExposureTime 输入 1/500 或 0.002。", "普通界面只读；API 可写 1/500 或 APEX:8"),
+    "ApertureValue": ("技术字段：APEX 光圈值，只读。正常编辑请在 FNumber 输入 F 数；APEX 3.5 约等于 f/3.4，要写 f/3.5 应输入 3.615。", "普通界面只读；API 可写 f/3.5 或 APEX:3.5"),
+    "BrightnessValue": ("技术字段：APEX 亮度，只读；0 表示中等亮度。", "普通界面只读；API 可写 EV/APEX 值"),
+    "ExposureBiasValue": ("曝光补偿，单位 EV，是自然值。", "有符号分数或小数，例如 -1/3、1/2、0"),
+    "MaxApertureValue": ("技术字段：镜头最大光圈 APEX 值，只读；显示为等效 F 数。", "普通界面只读；API 可写 f/2.8 或 APEX:2.97"),
     "SubjectDistance": ("对焦距离，单位米。0 表示未知，0xFFFFFFFF 表示无穷远。", "分数或小数，例如 25/10"),
     "MeteringMode": ("测光模式。", "整数代码；可直接点选常用值"),
     "LightSource": ("白平衡使用的光源类型。", "整数代码；可直接点选常用值"),
@@ -965,6 +995,9 @@ def tag_help(name: str) -> dict[str, Any]:
         fmt = _TYPE_FORMAT.get(info.type or ASCII, "")
     options = ENUM_CHOICES.get(info.name, ())
     known = info.name != ("0x%04X" % tag)
+    technical = is_technical(ifd, tag)
+    readonly = technical or info.name in ("MakerNote", "ExifIFDPointer",
+                                          "GPSInfoIFDPointer", "InteroperabilityIFDPointer")
     return {
         "name": info.name if known else raw,
         "ifd": ifd,
@@ -973,7 +1006,7 @@ def tag_help(name: str) -> dict[str, Any]:
         "desc": desc,
         "format": fmt,
         "options": [{"value": v, "label": label} for v, label in options],
-        "readonly": info.name in ("MakerNote", "ExifIFDPointer",
-                                  "GPSInfoIFDPointer", "InteroperabilityIFDPointer"),
+        "readonly": readonly,
+        "technical": technical,
     }
 

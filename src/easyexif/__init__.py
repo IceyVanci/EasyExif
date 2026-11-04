@@ -1,8 +1,8 @@
 """EasyExif - an open source EXIF/XMP metadata editor.
 
-A self-contained EXIF/XMP metadata editor: lossless JPEG segment editing,
-EXIF/TIFF read-write, maker note decoding, GPS datum conversion, batch
-reporting and an originality validator.
+Lossless JPEG segment editing, EXIF/TIFF read-write, maker note decoding,
+GPS datum conversion, batch reporting and an originality validator, built on
+public format specifications.
 """
 from __future__ import annotations
 

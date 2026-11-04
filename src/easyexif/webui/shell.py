@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 
+from .. import __version__
+
 
 def launch_pywebview(url: str, server=None, session=None, width: int = 1440,
                      height: int = 900) -> int:
@@ -43,7 +45,7 @@ def launch_pywebview(url: str, server=None, session=None, width: int = 1440,
 
     bridge = Bridge()
     window = webview.create_window(
-        "EasyExif",
+        "EasyExif " + __version__,
         url,
         width=width,
         height=height,

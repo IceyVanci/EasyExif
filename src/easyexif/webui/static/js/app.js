@@ -9,6 +9,7 @@ const state = {
   metaScope: 'shooting',
   selected: null,
   mode: 'edit',
+  version: '0.1.0',
   reports: {},
   zoom: 1,
   fit: true,
@@ -68,7 +69,8 @@ function renderAll() {
 function renderTop() {
   const doc = state.doc;
   const has = !!doc;
-  document.title = has ? doc.name + ' · EasyExif' : 'EasyExif · Metadata Studio';
+  const version = state.version ? ' ' + state.version : '';
+  document.title = has ? doc.name + ' · EasyExif' + version : 'EasyExif' + version + ' · Metadata Studio';
   const meta = [];
   if (has && doc.docs && doc.docs.length > 1) meta.push('图像 ' + (doc.active_index + 1) + '/' + doc.docs.length);
   if (has) {
@@ -250,10 +252,24 @@ function renderHistoryButtons() {
 function filteredRows() {
   if (!state.doc) return [];
   const q = state.filter.trim().toLowerCase();
-  return state.doc.rows.filter(function (row) {
+  const source = state.doc.rows;
+  const hasFNumber = source.some(function (row) {
+    return row.ifd === 'EXIF' && row.name === 'FNumber';
+  });
+  const hasExposureTime = source.some(function (row) {
+    return row.ifd === 'EXIF' && row.name === 'ExposureTime';
+  });
+  return source.filter(function (row) {
     if (row.ifd === 'XMP') return false;
     if (typeof row.tag === 'number' && HIDDEN_TAGS.has(row.tag)) return false;
     const scope = state.metaScope;
+    if (scope === 'shooting' && row.ifd === 'EXIF') {
+      // APEX tags are storage details. Hide the duplicate technical row when
+      // the natural tag is available; keep it as a read-only fallback if not.
+      if (row.name === 'ApertureValue' && hasFNumber) return false;
+      if (row.name === 'ShutterSpeedValue' && hasExposureTime) return false;
+      if (row.name === 'BrightnessValue') return false;
+    }
     if (scope !== 'all' && SCOPE_IFDS[scope] && SCOPE_IFDS[scope].indexOf(row.ifd) === -1) return false;
     if (!q) return true;
     return ((row.label || row.name) + ' ' + row.name + ' ' + row.value + ' ' + row.tag + ' ' + row.ifd).toLowerCase().includes(q);
@@ -295,13 +311,20 @@ function renderMeta() {
       tr.dataset.ifd = row.ifd;
       tr.dataset.name = row.name;
       tr.dataset.tag = row.tag;
+      if (row.readonly) tr.classList.add('readonly-row');
       if (state.selected && state.selected.ifd === row.ifd && state.selected.name === row.name) {
         tr.classList.add('selected');
       }
       const t1 = el('td', 'label', row.label || row.name);
       t1.title = row.label || row.name;
-      const t2 = el('td', 'value', row.value);
-      t2.title = row.value;
+      const t2 = el('td', 'value');
+      t2.appendChild(document.createTextNode(row.value));
+      if (row.technical) {
+        const tech = el('span', 'tech-value', row.technical);
+        tech.title = '技术字段（只读）';
+        t2.appendChild(tech);
+      }
+      t2.title = row.technical ? row.value + ' · ' + row.technical : row.value;
       const t3 = el('td', 'mono tagcell', typeof row.tag === 'number'
         ? row.tag.toString(16).toUpperCase().padStart(4, '0') : row.tag);
       const t4 = el('td', 'tagname', row.name);
@@ -330,6 +353,8 @@ function renderMeta() {
 }
 
 function editValue(row) {
+  if (row.name === 'FNumber') return String(row.value).replace(/^f\//, '');
+  if (row.name === 'ExposureTime') return String(row.value).replace(/\s*s$/, '');
   const raw = row.raw;
   if (row.type === 'UNDEFINED' || row.type === 'BYTE') return row.value;
   if (raw === null || raw === undefined) return row.value;
@@ -360,6 +385,40 @@ function openEdit(row) {
   if (!ensureEditable()) return;
   if (row.ifd === 'MakerNote') {
     toast('厂商注释字段为只读', 'info');
+    return;
+  }
+  if (row.readonly) {
+    const redirect = row.name === 'ApertureValue' ? 'FNumber'
+      : row.name === 'ShutterSpeedValue' ? 'ExposureTime' : '';
+    if (redirect) {
+      const natural = state.doc.rows.find(function (r) {
+        return r.ifd === 'EXIF' && r.name === redirect;
+      });
+      if (natural) {
+        toast('技术字段只读，已转到 ' + redirect, 'info');
+        openEdit(natural);
+        return;
+      }
+      const naturalName = redirect === 'FNumber' ? 'EXIF.FNumber' : 'EXIF.ExposureTime';
+      const naturalValue = redirect === 'FNumber'
+        ? String(row.value).replace(/^f\//, '')
+        : String(row.value).replace(/\s*s$/, '');
+      toast('技术字段只读，正在添加 ' + redirect + ' 自然值', 'info');
+      openTagEditor({
+        title: redirect === 'FNumber' ? '添加光圈 F 数' : '添加快门时间',
+        action: '添加',
+        name: naturalName,
+        value: naturalValue,
+        onSave: function (tagName, tagValue) {
+          return applyOps([{ op: 'set', name: tagName, value: tagValue }], '已更新 ' + tagName);
+        }
+      });
+      return;
+    }
+    const reason = row.name === 'BrightnessValue' ? '亮度是只读技术字段'
+      : row.name === 'MaxApertureValue' ? '最大光圈是只读技术字段'
+      : '技术字段只读';
+    toast(reason, 'info');
     return;
   }
   const name = row.ifd === 'XMP' ? 'XMP.' + row.name : row.ifd + '.' + row.name;
@@ -429,6 +488,8 @@ function openTagEditor(config) {
     if (data.readonly) meta.push('只读');
     tagMeta.textContent = meta.join(' · ');
     if (data.desc) hint.appendChild(el('p', 'hint-desc', data.desc));
+    valueInput.readOnly = !!data.readonly;
+    valueInput.title = data.readonly ? '技术字段为只读；请编辑对应的自然值' : '';
     if (data.format) {
       const row = el('div', 'hint-row');
       row.appendChild(el('span', 'hint-key', '输入格式'));
@@ -496,9 +557,22 @@ function openTagEditor(config) {
       const data = res.data || {};
       preview.className = 'edit-preview ok';
       clear(preview);
-      preview.appendChild(el('span', 'preview-key', '将写入'));
-      preview.appendChild(el('span', 'preview-val', data.display === undefined ? value : data.display));
-      if (data.count > 1) preview.appendChild(el('span', 'preview-count', data.count + ' 个分量'));
+      const main = el('div', 'preview-main');
+      main.appendChild(el('span', 'preview-key', '将写入'));
+      main.appendChild(el('span', 'preview-val', data.display === undefined ? value : data.display));
+      if (data.count > 1) main.appendChild(el('span', 'preview-count', data.count + ' 个分量'));
+      preview.appendChild(main);
+      if (data.technical) {
+        preview.appendChild(el('div', 'preview-tech', '技术值：' + data.technical));
+      }
+      (data.derived || []).forEach(function (item) {
+        const row = el('div', 'preview-derived');
+        row.appendChild(el('span', 'preview-key', '关联'));
+        row.appendChild(el('span', 'preview-name', item.name));
+        row.appendChild(el('span', 'preview-val', item.display));
+        preview.appendChild(row);
+      });
+      if (data.note) preview.appendChild(el('div', 'preview-note', data.note));
     } catch (err) {
       if (seq !== previewSeq) return;
       preview.className = 'edit-preview bad';
@@ -1336,6 +1410,15 @@ async function init() {
   bind();
   setDoc(null);
   setStatus('就绪');
+  try {
+    const health = await api.health();
+    if (health && health.version) {
+      state.version = health.version;
+      const badge = $('#appVersion');
+      if (badge) badge.textContent = 'v' + health.version;
+      renderTop();
+    }
+  } catch (err) { /* version badge keeps its static fallback */ }
   try {
     const res = await api.doc();
     if (res.doc && res.doc.open) setDoc(res.doc);

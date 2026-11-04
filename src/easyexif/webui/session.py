@@ -337,6 +337,8 @@ class Session:
                 "bytes": row.get("bytes"),
                 "value": display_value(row["display"]),
                 "raw": jsonable(row["value"]),
+                "technical": row.get("technical"),
+                "readonly": bool(row.get("readonly")),
             })
         segments = []
         if meta.jpeg:

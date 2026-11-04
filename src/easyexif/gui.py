@@ -1,8 +1,8 @@
 """Tkinter desktop editor for EasyExif.
 
-The layout follows a familiar editor workflow: an IFD tree on the left,
-an image preview and a tabbed inspector (metadata / XMP / JPEG segments / GPS /
-validation) on the right.
+The layout is an IFD tree on the left, an image preview in the middle and a
+tabbed inspector (metadata / XMP / JPEG segments / GPS / validation) on the
+right.
 """
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from . import gps
+from . import __version__, gps
 from .jpeg import Jpeg
 from .metadata import Metadata, MetadataError
 from .tags import format_value, resolve_name
 from .validate import validate as run_validate
 from .xmp import Xmp
 
-APP_TITLE = "EasyExif 元数据编辑器"
+APP_TITLE = "EasyExif %s 元数据编辑器" % __version__
 
 
 class EditDialog(simpledialog.Dialog):
@@ -607,12 +607,11 @@ class EasyExifApp(tk.Tk):
         self.status("元数据已清除（尚未保存）")
 
     def about(self):
-        from . import __version__
         messagebox.showinfo("关于 EasyExif", (
             "EasyExif %s\n\n"
             "开源 EXIF / XMP 元数据编辑器\n"
             "支持 JPEG 段编辑、厂商注释、GPS 坐标转换、批量导出与原始性校验。\n\n"
-            "本项目为独立实现。" % __version__))
+            "所有格式实现均基于公开规范独立完成。" % __version__))
 
     # -- lifecycle --------------------------------------------------------
     def status(self, text: str):

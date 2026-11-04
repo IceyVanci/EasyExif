@@ -1,6 +1,6 @@
 """Metadata templates and text stamps.
 
-A template is a small JSON document. Text stamps use a compact placeholder
+A template is a small JSON document.  Text stamps use a compact placeholder
 dialect, for example:
 
     [[EXIF.DateTimeOriginal {YYYY-MM-DD HH:MM:SS}]]

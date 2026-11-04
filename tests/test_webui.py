@@ -64,9 +64,23 @@ class WebUITests(unittest.TestCase):
         self.assertIn(b'id="modeSwitch"', body)
         self.assertIn(b'id="docTabs"', body)
         self.assertIn(b'id="readonlyBadge"', body)
+        self.assertIn(b'id="appVersion"', body)
+        self.assertIn(b'v0.1.0', body)
+        self.assertIn(b'validate-disclaimer', body)
+        self.assertIn("不能证明图像未经编辑".encode("utf-8"), body)
         status, ctype, body = self.request("GET", "/css/app.css", token="")
         self.assertEqual(status, 200)
         self.assertIn(b"--accent", body)
+        status, ctype, body = self.request("GET", "/js/app.js", token="")
+        self.assertEqual(status, 200)
+        self.assertIn(b"preview-derived", body)
+        self.assertIn(b"readonly-row", body)
+        self.assertIn("技术字段只读".encode("utf-8"), body)
+
+    def test_health_reports_version(self):
+        status, _, body = self.request("GET", "/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["version"], "0.1.0")
 
     def test_auth(self):
         status, _, _ = self.request("GET", "/api/doc", token="")
@@ -134,7 +148,14 @@ class WebUITests(unittest.TestCase):
         help_data = json.loads(body)["data"]
         self.assertEqual(help_data["type"], "SRATIONAL")
         self.assertIn("亮度", help_data["desc"])
-        self.assertIn("-4196/2560", help_data["format"])
+        self.assertTrue(help_data["readonly"])
+        self.assertIn("APEX", help_data["format"])
+
+        status, _, body = self.request("GET", "/api/tag-help?name=EXIF.ApertureValue")
+        self.assertEqual(status, 200)
+        aperture_help = json.loads(body)["data"]
+        self.assertTrue(aperture_help["readonly"])
+        self.assertIn("FNumber", aperture_help["desc"])
 
         status, _, body = self.request("GET", "/api/tag-help?name=Orientation")
         self.assertEqual(status, 200)
@@ -145,6 +166,37 @@ class WebUITests(unittest.TestCase):
             "name": "EXIF.FNumber", "value": "28/10"})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["data"]["display"], "f/2.8")
+
+        status, _, body = self.request("POST", "/api/format-value", {
+            "name": "EXIF.FNumber", "value": "f/3.5"})
+        self.assertEqual(status, 200)
+        fnumber = json.loads(body)["data"]
+        self.assertEqual(fnumber["display"], "f/3.5")
+        self.assertEqual(fnumber["derived"][0]["name"], "ApertureValue")
+        self.assertAlmostEqual(float(fnumber["derived"][0]["value"]), 3.6147, places=3)
+
+        status, _, body = self.request("POST", "/api/format-value", {
+            "name": "EXIF.ExposureTime", "value": "1/500"})
+        self.assertEqual(status, 200)
+        exposure = json.loads(body)["data"]
+        self.assertEqual(exposure["display"], "1/500 s")
+        self.assertEqual(exposure["derived"][0]["name"], "ShutterSpeedValue")
+        self.assertAlmostEqual(float(exposure["derived"][0]["value"]), 8.9658, places=3)
+
+        status, _, body = self.request("POST", "/api/format-value", {
+            "name": "EXIF.ApertureValue", "value": "3.5"})
+        self.assertEqual(status, 200)
+        apex = json.loads(body)["data"]
+        self.assertTrue(apex["readonly"])
+        self.assertEqual(apex["display"], "f/3.4")
+        self.assertEqual(apex["technical"], "APEX 3.5")
+
+        status, _, body = self.request("POST", "/api/format-value", {
+            "name": "EXIF.ApertureValue", "value": "f/3.5"})
+        self.assertEqual(status, 200)
+        apex_natural = json.loads(body)["data"]
+        self.assertEqual(apex_natural["display"], "f/3.5")
+        self.assertIn("APEX 3.6147", apex_natural["technical"])
 
         status, _, body = self.request("POST", "/api/format-value", {
             "name": "GPS.GPSLatitude", "value": "39.9087"})
@@ -209,6 +261,8 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(status, 200)
         report = json.loads(body)["report"]
         self.assertEqual(len(report["checks"]), 13)
+        self.assertIn("disclaimer", report)
+        self.assertIn("不能证明", report["disclaimer"])
         status, _, body = self.request("POST", "/api/batch/scan", {"path": str(SAMPLE)})
         self.assertEqual(status, 200)
         self.assertEqual(len(json.loads(body)["data"]["files"]), 1)

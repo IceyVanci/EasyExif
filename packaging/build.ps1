@@ -21,12 +21,14 @@ $Name = if ($Console) { "EasyExifDebug" } else { "EasyExif" }
 $Mode = if ($Console) { "--console" } else { "--windowed" }
 $Icon = Join-Path $Root "packaging\easyexif.ico"
 $Static = (Join-Path $Root "src\easyexif\webui\static") + ";easyexif\webui\static"
+$VersionFile = Join-Path $Root "packaging\version_info.txt"
 
 $arguments = @(
     "-m", "PyInstaller",
     "--noconfirm", "--clean", "--onefile", "--runtime-tmpdir", ".easyexif-runtime", $Mode,
     "--name", $Name,
     "--icon", $Icon,
+    "--version-file", $VersionFile,
     "--add-data", $Static,
     "--paths", (Join-Path $Root "src"),
     "--hidden-import", "easyexif.webui.dialog_helper",

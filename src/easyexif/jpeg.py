@@ -263,7 +263,11 @@ class Jpeg:
     def mpf(self) -> dict | None:
         for s in self.segments:
             if s.marker == 0xE2 and s.data.startswith(MPF_HEADER):
-                return parse_mpf(s.data[len(MPF_HEADER):])
+                # Segment.offset points at the marker; add the two-byte
+                # marker and length, then skip "MPF\0", to reach the MP
+                # Endian field that MP Entry offsets are relative to.
+                base = s.offset + 4 + len(MPF_HEADER)
+                return parse_mpf(s.data[len(MPF_HEADER):], base_offset=base)
         return None
 
     def dimensions(self) -> tuple[int, int] | None:
@@ -388,14 +392,21 @@ def parse_photoshop_iptc(data: bytes) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # MPF
 # ---------------------------------------------------------------------------
-def parse_mpf(data: bytes) -> dict:
+def parse_mpf(data: bytes, base_offset: int = 0) -> dict:
+    """Parse the MPF TIFF header.
+
+    ``base_offset`` is the file offset of the MP Endian field (the first byte
+    after ``MPF\\0``).  MP Entry offsets are relative to that field.  The
+    first individual image may use the MP Header start instead, so callers
+    should keep both bases when checking file bounds.
+    """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
-        return {"error": "invalid MPF header"}
+        return {"error": "invalid MPF header", "base_offset": base_offset}
     endian = "<" if data[:2] == b"II" else ">"
     if struct.unpack_from(endian + "H", data, 2)[0] != 42:
-        return {"error": "bad MPF magic"}
+        return {"error": "bad MPF magic", "base_offset": base_offset}
     ifd = struct.unpack_from(endian + "I", data, 4)[0]
-    result: dict = {"version": None, "images": []}
+    result: dict = {"version": None, "images": [], "base_offset": base_offset}
     if ifd + 2 > len(data):
         return result
     count = struct.unpack_from(endian + "H", data, ifd)[0]
@@ -404,20 +415,24 @@ def parse_mpf(data: bytes) -> dict:
         if base + 12 > len(data):
             break
         tag, typ, cnt = struct.unpack_from(endian + "HHI", data, base)
-        if typ == 7 and cnt <= 4:
-            val = data[base + 8:base + 8 + cnt]
+        size = TYPE_SIZE.get(typ, 1) * cnt
+        if size <= 4:
+            # TIFF stores values that fit in four bytes inline, for every
+            # field type.  Only following an offset for larger values avoids
+            # misreading B001 (LONG, count 1) as a file offset.
+            val = data[base + 8:base + 8 + size]
         else:
             off = struct.unpack_from(endian + "I", data, base + 8)[0]
-            val = data[off:off + TYPE_SIZE.get(typ, 1) * cnt]
+            val = data[off:off + size] if 0 <= off <= len(data) else b""
         if tag == 0xB000:
             result["version"] = val.rstrip(b"\0").decode("ascii", "replace")
         elif tag == 0xB001:
-            result["declared_images"] = int.from_bytes(val[:4], "little" if endian == "<" else "big")
+            if len(val) >= 4:
+                result["declared_images"] = int.from_bytes(
+                    val[:4], "little" if endian == "<" else "big")
         elif tag == 0xB002:
-            for j in range(0, min(len(val), 16 * 20), 16):
+            for j in range(0, len(val) - 15, 16):
                 chunk = val[j:j + 16]
-                if len(chunk) < 16:
-                    break
                 attr = struct.unpack_from(endian + "I", chunk, 0)[0]
                 size = struct.unpack_from(endian + "I", chunk, 4)[0]
                 off = struct.unpack_from(endian + "I", chunk, 8)[0]

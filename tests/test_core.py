@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -36,9 +37,11 @@ def tempdir():
 
 from easyexif import Jpeg, Metadata, Tiff, Xmp, validate
 from easyexif import gps
+from easyexif.jpeg import parse_mpf
 from easyexif.batch import BUILTIN_PROFILES, Profile, export_csv, rename, sort_into
 from easyexif.makernote import MakerField, MakerNote, _encode_ifd, parse_makernote
-from easyexif.tags import ASCII, RATIONAL, SHORT, UNDEFINED
+from easyexif.metadata import preview_value
+from easyexif.tags import ASCII, RATIONAL, SHORT, SRATIONAL, UNDEFINED
 from easyexif.template import Template, render_stamp, builtin_templates
 
 
@@ -174,6 +177,64 @@ class JpegTests(unittest.TestCase):
         self.assertTrue(m2.jpeg.dimensions())
 
 
+class NaturalValueTests(unittest.TestCase):
+    def setUp(self):
+        self.meta = Metadata(new_dir() / "virtual.jpg")
+        self.meta.tiff = make_exif(thumbnail=False)
+        self.meta.tiff.set("EXIF", 0x9202, (297, 100), RATIONAL)
+        self.meta.tiff.set("EXIF", 0x9201, (7966, 1000), SRATIONAL)
+
+    def tearDown(self):
+        shutil.rmtree(self.meta.path.parent, ignore_errors=True)
+
+    def test_fnumber_updates_aperture_value(self):
+        self.meta.set("FNumber", "f/3.5")
+        self.assertEqual(self.meta.get_text("FNumber"), "f/3.5")
+        self.assertEqual(self.meta.get_text("ApertureValue"), "f/3.5")
+        self.assertEqual(self.meta.exposure()["aperture"], "f/3.5")
+
+    def test_exposure_time_updates_shutter_speed(self):
+        self.meta.set("ExposureTime", "1/500")
+        self.assertEqual(self.meta.get_text("ExposureTime"), "1/500 s")
+        self.assertEqual(self.meta.get_text("ShutterSpeedValue"), "1/500 s")
+        self.assertEqual(self.meta.exposure()["shutter"], "1/500 s")
+
+    def test_raw_apex_remains_apex(self):
+        self.meta.set("ApertureValue", "3.5")
+        self.assertEqual(self.meta.get_text("ApertureValue"), "f/3.4")
+        self.assertEqual(self.meta.get_text("FNumber"), "f/2.8")
+
+    def test_adding_fnumber_updates_existing_apex(self):
+        self.meta.delete("FNumber")
+        self.meta.set("FNumber", "2.0")
+        self.assertEqual(self.meta.get_text("FNumber"), "f/2")
+        self.assertEqual(self.meta.get_text("ApertureValue"), "f/2")
+
+    def test_preview_returns_natural_and_derived(self):
+        aperture = preview_value("EXIF.FNumber", "f/3.5")
+        self.assertEqual(aperture["display"], "f/3.5")
+        self.assertEqual(aperture["derived"][0]["name"], "ApertureValue")
+        self.assertAlmostEqual(float(aperture["derived"][0]["value"]), 3.6147, places=3)
+
+        shutter = preview_value("EXIF.ExposureTime", "1/500")
+        self.assertEqual(shutter["display"], "1/500 s")
+        self.assertEqual(shutter["derived"][0]["name"], "ShutterSpeedValue")
+        self.assertAlmostEqual(float(shutter["derived"][0]["value"]), 8.9658, places=3)
+
+    def test_technical_rows_are_readonly(self):
+        rows = {row["name"]: row for row in self.meta.rows() if row["ifd"] == "EXIF"}
+        self.assertTrue(rows["ApertureValue"]["readonly"])
+        self.assertEqual(rows["ApertureValue"]["technical"], "APEX 2.97")
+        self.assertTrue(rows["ShutterSpeedValue"]["readonly"])
+        self.assertFalse(rows["FNumber"]["readonly"])
+
+    def test_exposure_falls_back_to_apex(self):
+        self.meta.delete("FNumber")
+        self.meta.delete("ExposureTime")
+        self.assertEqual(self.meta.exposure()["aperture"], "f/2.8")
+        self.assertEqual(self.meta.exposure()["shutter"], "1/250 s")
+
+
 class GpsTests(unittest.TestCase):
     def test_parse_formats(self):
         for text in ("31.225", "31 13 30 N", "31d13'30\"N", "N31 13 30"):
@@ -295,6 +356,25 @@ class TemplateTests(unittest.TestCase):
             self.assertEqual(m2.get_text("Copyright"), "© Your Name")
 
 
+class MpfTests(unittest.TestCase):
+    def test_inline_number_of_images(self):
+        def entry(tag, typ, count, payload):
+            return struct.pack("<HHI", tag, typ, count) + payload.ljust(4, b"\0")
+
+        header = b"II" + struct.pack("<H", 42) + struct.pack("<I", 8)
+        entries = [
+            entry(0xB000, 7, 4, b"0100"),
+            entry(0xB001, 4, 1, struct.pack("<I", 2)),
+            entry(0xB002, 7, 32, struct.pack("<I", 8 + 2 + 3 * 12 + 4)),
+        ]
+        ifd = struct.pack("<H", len(entries)) + b"".join(entries) + struct.pack("<I", 0)
+        body = header + ifd
+        body += b"\0" * (50 - len(body)) + b"\0" * 32
+        parsed = parse_mpf(body)
+        self.assertEqual(parsed["declared_images"], 2)
+        self.assertEqual(len(parsed["images"]), 2)
+
+
 class ValidateTests(unittest.TestCase):
     def test_camera_like_file(self):
         with tempdir() as tmp:
@@ -308,6 +388,26 @@ class ValidateTests(unittest.TestCase):
             statuses = {c.key: c.status for c in report.checks}
             self.assertEqual(statuses["exif"], "Pass")
             self.assertEqual(statuses["software"], "Pass")
+            self.assertIn("disclaimer", report.to_dict())
+            self.assertIn("不能证明", report.render())
+            legacy = next(c for c in report.checks if c.key == "legacy")
+            self.assertEqual(legacy.title, "其他编辑器痕迹")
+
+    def test_camera_firmware_is_not_an_editor(self):
+        with tempdir() as tmp:
+            path = make_jpeg(Path(tmp) / "sony.jpg")
+            j = Jpeg.parse(path.read_bytes())
+            exif = make_exif()
+            exif.set("IFD0", 0x010F, "SONY", ASCII)
+            exif.set("IFD0", 0x0110, "ILCE-6300", ASCII)
+            exif.set("IFD0", 0x0131, "ILCE-6300 v2.01", ASCII)
+            j.set_exif_payload(exif.to_bytes())
+            path.write_bytes(j.to_bytes())
+            report = validate(path)
+            statuses = {c.key: c.status for c in report.checks}
+            self.assertEqual(statuses["software"], "Pass")
+            self.assertIn("相机固件", next(c.detail for c in report.checks
+                                          if c.key == "software"))
 
     def test_no_exif_is_unknown(self):
         with tempdir() as tmp:

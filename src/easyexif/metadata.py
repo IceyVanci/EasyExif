@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -14,8 +15,9 @@ from typing import Any, Iterable
 from . import gps as gpsmod
 from .jpeg import Jpeg
 from .tags import (ASCII, BYTE, LONG, RATIONAL, SHORT, SRATIONAL, UNDEFINED,
-                   TYPE_NAMES, TYPE_SIZES, display_value, format_value,
-                   rational_to_float, resolve_name, tag_info)
+                   TYPE_NAMES, TYPE_SIZES, display_value, fnumber_to_apex,
+                   format_value, is_technical, rational_to_float, resolve_name,
+                   seconds_to_apex_shutter, tag_info, technical_value)
 from .tiff import Tiff, TiffError
 from .xmp import Xmp
 
@@ -172,6 +174,7 @@ class Metadata:
         ifd, tag = resolve_name(name)
         if ifd == "IFD1":
             ifd = "IFD0"
+        value = _normalize_natural_value(ifd, tag, value)
         tiff = self._require_tiff(create=True)
         info = tag_info(ifd, tag)
         old = tiff.ifds.get(ifd)
@@ -194,6 +197,22 @@ class Metadata:
         else:
             coerced = _coerce(old_type, value)
         tiff.set(ifd, tag, coerced, old_type)
+        self._sync_derived(ifd, tag, coerced)
+
+    def _sync_derived(self, ifd: str, tag: int, value: Any) -> None:
+        """Keep the paired APEX tag in step with its natural-value tag."""
+        if ifd != "EXIF" or self.tiff is None:
+            return
+        if tag == 0x829D:  # FNumber -> ApertureValue, only if it already exists
+            number = rational_to_float(value)
+            if number and number > 0 and self.tiff.get("EXIF", 0x9202) is not None:
+                self.tiff.set("EXIF", 0x9202,
+                              _coerce(RATIONAL, fnumber_to_apex(number)), RATIONAL)
+        elif tag == 0x829A:  # ExposureTime -> ShutterSpeedValue
+            seconds = rational_to_float(value)
+            if seconds and seconds > 0 and self.tiff.get("EXIF", 0x9201) is not None:
+                self.tiff.set("EXIF", 0x9201,
+                              _coerce(SRATIONAL, seconds_to_apex_shutter(seconds)), SRATIONAL)
 
     def delete(self, name: str) -> bool:
         if name.upper().startswith("XMP."):
@@ -210,6 +229,8 @@ class Metadata:
                 ifd, tag = row["ifd"], row["tag"]
                 row = dict(row)
                 row["display"] = format_value(ifd, tag, row["value"])
+                row["technical"] = technical_value(ifd, tag, row["value"])
+                row["readonly"] = is_technical(ifd, tag)
                 rows.append(row)
             if include_makernote and self.tiff.makernote:
                 for f in self.tiff.makernote.describe():
@@ -244,6 +265,10 @@ class Metadata:
             "software": self.get_text("Software", ""),
         }
 
+    def _apex_text(self, tag: int) -> str:
+        value = self.tiff.get("EXIF", tag) if self.tiff is not None else None
+        return format_value("EXIF", tag, value) if value is not None else ""
+
     def _makernote_text(self, name: str) -> str:
         if not self.tiff or not self.tiff.makernote:
             return ""
@@ -257,8 +282,8 @@ class Metadata:
     def exposure(self) -> dict[str, str]:
         return {
             "date": self.get_text("DateTimeOriginal", "") or self.get_text("DateTime", ""),
-            "shutter": self.get_text("ExposureTime", ""),
-            "aperture": self.get_text("FNumber", ""),
+            "shutter": self.get_text("ExposureTime", "") or self._apex_text(0x9201),
+            "aperture": self.get_text("FNumber", "") or self._apex_text(0x9202),
             "iso": self.get_text("ISOSpeedRatings", "")
                    or self._makernote_text("DerivedISO"),
             "focal": self.get_text("FocalLength", ""),
@@ -523,6 +548,62 @@ _BYTE_NUMERIC_TAGS = {
 }
 
 
+def _numeric_text(text: str) -> float:
+    token = text.strip()
+    if "/" in token:
+        num, den = token.split("/", 1)
+        return float(num) / float(den)
+    return float(token)
+
+
+def _normalize_natural_value(ifd: str, tag: int, value: Any) -> Any:
+    """Accept natural editor input while keeping raw APEX available as advanced input.
+
+    FNumber and ExposureTime are natural-value tags.  ApertureValue and
+    ShutterSpeedValue remain raw APEX tags by default; ``f/`` and second
+    suffixes are accepted only when the user explicitly types a natural
+    value into an advanced field.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    if tag == 0x829D:  # FNumber
+        match = re.match(r"^[fF]\s*/?\s*([0-9]+(?:\.[0-9]+)?)$", text)
+        if match:
+            if float(match.group(1)) <= 0:
+                raise MetadataError("光圈 F 数必须大于 0")
+            return match.group(1)
+        return text
+    if tag == 0x829A:  # ExposureTime
+        return re.sub(r"\s*(?:s|sec|秒|\"|″)\s*$", "", text, flags=re.IGNORECASE)
+    if tag in (0x9202, 0x9205):  # ApertureValue / MaxApertureValue
+        if text.lower().startswith("apex:"):
+            return text.split(":", 1)[1].strip()
+        match = re.match(r"^[fF]\s*/?\s*([0-9]+(?:\.[0-9]+)?)$", text)
+        if match:
+            fnumber = float(match.group(1))
+            if fnumber <= 0:
+                raise MetadataError("光圈 F 数必须大于 0")
+            return fnumber_to_apex(fnumber)
+        return text
+    if tag == 0x9201:  # ShutterSpeedValue
+        if text.lower().startswith("apex:"):
+            return text.split(":", 1)[1].strip()
+        natural = re.sub(r"\s*(?:s|sec|秒|\"|″)\s*$", "", text, flags=re.IGNORECASE)
+        if "/" in natural or natural != text:
+            try:
+                seconds = _numeric_text(natural)
+            except (ValueError, ZeroDivisionError):
+                return text
+            if seconds <= 0:
+                raise MetadataError("快门时间必须大于 0")
+            return seconds_to_apex_shutter(seconds)
+        return text
+    return value
+
+
 def preview_value(name: str, text: str) -> dict[str, Any]:
     """Mirror Metadata.set coercion so the editor can preview a typed value."""
     raw = str(name or "").strip()
@@ -536,6 +617,7 @@ def preview_value(name: str, text: str) -> dict[str, Any]:
         ifd = "IFD0"
     info = tag_info(ifd, tag)
     type_id = info.type or ASCII
+    normalized = _normalize_natural_value(ifd, tag, text)
     if info.fmt == "datetime" or tag in (0x0132, 0x9003, 0x9004):
         value: Any = format_exif_datetime(parse_exif_datetime(text))
     elif tag == 0x9286:
@@ -545,14 +627,45 @@ def preview_value(name: str, text: str) -> dict[str, Any]:
     elif ifd == "GPS" and tag in (0x0002, 0x0004) and _as_number(text) is not None:
         value = gpsmod.dms_to_rationals(abs(float(_as_number(text) or 0.0)))
     else:
-        value = _coerce(type_id, text)
-    return {
+        value = _coerce(type_id, normalized)
+    result = {
         "display": display_value(format_value(ifd, tag, value, type_id)),
         "type": TYPE_NAMES.get(type_id, str(type_id)),
         "ifd": ifd,
         "tag": "0x%04X" % tag,
         "count": _count_value(type_id, value),
+        "readonly": is_technical(ifd, tag),
     }
+    number = rational_to_float(value)
+    if tag == 0x829D and number and number > 0:
+        apex = fnumber_to_apex(number)
+        result["unit"] = "F 数"
+        result["derived"] = [{
+            "name": "ApertureValue",
+            "display": "APEX %g（等效 f/%g）" % (apex, round(number, 1)),
+            "value": "%g" % apex,
+        }]
+        result["note"] = "若文件中已有 ApertureValue，将同步为上面的 APEX 值"
+    elif tag == 0x829A and number and number > 0:
+        apex = seconds_to_apex_shutter(number)
+        result["unit"] = "秒"
+        result["derived"] = [{
+            "name": "ShutterSpeedValue",
+            "display": "APEX %g（等效 %s）" % (
+                apex, format_value("EXIF", 0x9201, _coerce(SRATIONAL, apex), SRATIONAL)),
+            "value": "%g" % apex,
+        }]
+        result["note"] = "若文件中已有 ShutterSpeedValue，将同步为上面的 APEX 值"
+    elif tag in (0x9202, 0x9205) and number is not None:
+        result["technical"] = "APEX %g" % number
+        result["unit"] = "APEX"
+    elif tag == 0x9201 and number is not None:
+        result["technical"] = "APEX %g" % number
+        result["unit"] = "APEX"
+    elif tag == 0x9203 and number is not None:
+        result["technical"] = "APEX %g" % number
+        result["unit"] = "APEX/EV"
+    return result
 
 
 def _count_value(type_id: int, value: Any) -> int:

@@ -12,7 +12,10 @@
     <div class="brand">
       <div class="logo">E</div>
       <div class="brand-text">
-        <strong>EasyExif</strong>
+        <div class="brand-name">
+          <strong>EasyExif</strong>
+          <span class="version" id="appVersion">v0.1.0</span>
+        </div>
         <span>Metadata Studio</span>
       </div>
     </div>
@@ -173,6 +176,11 @@
       </div>
 
       <div class="tab-panel" data-panel="validate">
+        <div class="validate-disclaimer">
+          <strong>说明</strong>
+          <p>本报告是启发式检查，不能证明图像未经编辑，也不能作为司法鉴定或取证结论。</p>
+          <p>相机固件、手机系统、社交平台字段可能造成误报；文件也可能被有意清洗或伪造。1–5 级仅表示证据强弱。</p>
+        </div>
         <div class="panel-tools">
           <span class="muted">13 项启发式检查</span>
           <button id="btnRunValidate" class="btn small primary">开始校验</button>

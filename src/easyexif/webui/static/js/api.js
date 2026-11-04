@@ -34,6 +34,7 @@ export function imageUrl(kind, size, extra) {
 }
 
 export const api = {
+  health: function () { return request('GET', '/api/health'); },
   doc: function () { return request('GET', '/api/doc'); },
   chooseFiles: async function () {
     if (window.pywebview && window.pywebview.api && window.pywebview.api.choose_file) {
