@@ -1,0 +1,14 @@
+{
+  "name": "stock-metadata",
+  "description": "图库常用字段：标题、说明、关键词、城市",
+  "xmp": {
+    "dc:title": ["Replace with title"],
+    "dc:description": ["Replace with description"],
+    "dc:subject": ["keyword1", "keyword2", "keyword3"],
+    "photoshop:City": "Beijing",
+    "photoshop:Country": "China"
+  },
+  "options": {
+    "clear_gps": false
+  }
+}

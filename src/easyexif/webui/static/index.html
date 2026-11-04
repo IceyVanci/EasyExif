@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EasyExif · Metadata Studio</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="app" class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">E</div>
+      <div class="brand-text">
+        <strong>EasyExif</strong>
+        <span>Metadata Studio</span>
+      </div>
+    </div>
+    <div class="doc-head">
+      <div class="doc-tabs" id="docTabs"></div>
+      <div class="doc-meta">
+        <span id="dirtyBadge" class="badge hidden">未保存</span>
+        <span id="readonlyBadge" class="badge readonly hidden">预览 · 只读</span>
+        <span id="fileMeta" class="muted">打开一张 JPEG 或 TIFF 开始</span>
+      </div>
+    </div>
+    <button id="modeSwitch" class="mode-switch" role="switch" aria-checked="false" disabled
+            title="切换预览 / 编辑模式 (E)">
+      <span class="mode-opt edit">编辑</span>
+      <span class="mode-opt preview">预览</span>
+      <span class="mode-thumb" aria-hidden="true"></span>
+    </button>
+    <div class="actions">
+      <button id="btnOpen" class="btn primary">打开</button>
+      <button id="btnSave" class="btn">保存</button>
+      <button id="btnClose" class="btn" disabled>关闭</button>
+      <button id="btnUndo" class="icon-btn" title="撤销 (Ctrl+Z)">↶</button>
+      <button id="btnRedo" class="icon-btn" title="重做 (Ctrl+Y)">↷</button>
+      <span class="divider"></span>
+      <button id="btnValidate" class="btn">校验</button>
+      <button id="btnBatch" class="btn">批处理</button>
+      <button id="btnTheme" class="icon-btn" title="切换主题">◐</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="card">
+        <div class="card-head"><h2>文件</h2></div>
+        <button id="btnOpenLarge" class="dropzone">
+          <span class="drop-icon">＋</span>
+          <span class="drop-title">打开图像</span>
+          <span class="drop-hint">JPEG · TIFF · EXI</span>
+        </button>
+        <dl class="info-list" id="fileInfo">
+          <div><dt>格式</dt><dd id="infoFormat">—</dd></div>
+          <div><dt>尺寸</dt><dd id="infoSize">—</dd></div>
+          <div><dt>文件大小</dt><dd id="infoBytes">—</dd></div>
+          <div><dt>相机</dt><dd id="infoCamera">—</dd></div>
+          <div><dt>镜头</dt><dd id="infoLens">—</dd></div>
+          <div><dt>拍摄时间</dt><dd id="infoDate">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="card grow">
+        <div class="card-head"><h2>快捷操作</h2></div>
+        <div class="quick-list">
+          <button class="quick" data-quick="gps"><span>◎</span> 设置 GPS</button>
+          <button class="quick" data-quick="datetime"><span>◷</span> 同步拍摄时间</button>
+          <button class="quick" data-quick="strip"><span>⌫</span> 清除元数据</button>
+          <button class="quick" data-quick="validate"><span>✓</span> 原图校验</button>
+        </div>
+        <div class="tip">
+          <strong>提示</strong>
+          <p>所有修改先在内存中完成，点击“保存”才会写入文件。厂商注释未知字段会原样保留。</p>
+        </div>
+      </section>
+    </aside>
+
+    <section class="stage">
+      <div class="stage-head">
+        <div class="segmented" id="viewTabs">
+          <button class="active" data-view="image">图像</button>
+          <button data-view="histogram">直方图</button>
+        </div>
+        <div class="stage-tools">
+          <span id="zoomLabel" class="muted">适应窗口</span>
+          <button id="btnZoomOut" class="icon-btn" title="缩小">−</button>
+          <button id="btnZoomIn" class="icon-btn" title="放大">＋</button>
+          <button id="btnZoomFit" class="icon-btn" title="适应窗口">⤢</button>
+        </div>
+      </div>
+      <div class="canvas" id="canvas">
+        <div class="empty" id="emptyState">
+          <div class="empty-icon">🖼</div>
+          <h3>还没有打开图像</h3>
+          <p>选择一张 JPEG 或 TIFF，开始查看和编辑元数据。</p>
+          <button class="btn primary" id="btnEmptyOpen">打开图像</button>
+        </div>
+        <img id="preview" alt="预览" class="hidden">
+      </div>
+      <div class="histogram hidden" id="histogramView">
+        <canvas id="histogramCanvas" width="900" height="320"></canvas>
+      </div>
+      <div class="statusbar">
+        <span id="statusText">就绪</span>
+        <span id="statusRight" class="muted"></span>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <div class="segmented inspector-tabs" id="inspectorTabs">
+        <button class="active" data-tab="meta">元数据</button>
+        <button data-tab="xmp">XMP</button>
+        <button data-tab="segments">JPEG 段</button>
+        <button data-tab="gps">GPS</button>
+        <button data-tab="validate">校验</button>
+      </div>
+
+      <div class="tab-panel active" data-panel="meta">
+        <div class="panel-tools">
+          <input id="metaSearch" class="input" type="search" placeholder="搜索标签、值…">
+          <button id="btnAddTag" class="btn small">添加</button>
+          <button id="btnDeleteTag" class="btn small danger">删除</button>
+        </div>
+        <div class="meta-scopes" id="metaScopes">
+          <button class="scope active" data-scope="shooting">拍摄信息</button>
+          <button class="scope" data-scope="all">全部 EXIF</button>
+          <button class="scope" data-scope="general">常规信息</button>
+          <button class="scope" data-scope="gps">GPS 信息</button>
+          <button class="scope" data-scope="maker">厂商注释</button>
+        </div>
+        <div class="table-wrap" id="metaTable"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="xmp">
+        <div class="panel-tools">
+          <span class="muted">原始 XMP 包</span>
+          <button id="btnApplyXmp" class="btn small primary">应用</button>
+        </div>
+        <textarea id="xmpText" class="code-area" spellcheck="false" placeholder="没有 XMP 数据"></textarea>
+      </div>
+
+      <div class="tab-panel" data-panel="segments">
+        <div class="panel-tools">
+          <span class="muted" id="segmentCount">0 个段</span>
+          <button id="btnAddComment" class="btn small">添加注释段</button>
+        </div>
+        <div class="table-wrap" id="segmentTable"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="gps">
+        <div id="gpsView" class="gps-view">
+          <p class="muted">当前文件没有 GPS 数据。</p>
+        </div>
+        <form id="gpsForm" class="form-grid">
+          <label>纬度<input id="gpsLat" class="input" type="number" step="any" placeholder="39.9087"></label>
+          <label>经度<input id="gpsLon" class="input" type="number" step="any" placeholder="116.3975"></label>
+          <label>海拔 (m)<input id="gpsAlt" class="input" type="number" step="any" placeholder="可选"></label>
+          <label>坐标系
+            <select id="gpsDatum" class="input">
+              <option value="wgs84">WGS-84</option>
+              <option value="gcj02">GCJ-02</option>
+              <option value="bd09">BD-09</option>
+            </select>
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary small">写入 GPS</button>
+            <button type="button" id="btnClearGps" class="btn small danger">移除</button>
+          </div>
+        </form>
+        <div class="map-links" id="mapLinks"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="validate">
+        <div class="panel-tools">
+          <span class="muted">13 项启发式检查</span>
+          <button id="btnRunValidate" class="btn small primary">开始校验</button>
+        </div>
+        <div id="validateResult" class="validate-result">
+          <p class="muted">点击“开始校验”生成原图可信度报告。</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

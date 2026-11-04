@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easyexif"
+version = "0.1.0"
+description = "Open source EXIF/XMP metadata editor with JPEG segment editing, maker notes, GPS and originality validation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "EasyExif contributors"}]
+keywords = ["exif", "xmp", "jpeg", "metadata", "gps", "makernote"]
+dependencies = []
+
+[project.optional-dependencies]
+images = ["Pillow>=9"]
+webui = ["pywebview==6.2.1"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+easyexif = "easyexif.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+easyexif = [
+    "data/*.json",
+    "webui/static/*.html",
+    "webui/static/css/*.css",
+    "webui/static/js/*.js",
+]

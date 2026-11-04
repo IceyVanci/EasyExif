@@ -1,0 +1,15 @@
+# WebView2 desktop UI dependencies (primary EasyExif shell).
+# pywebview bundles the managed WebView2 DLLs; the system needs the
+# Microsoft Edge WebView2 Runtime and .NET Framework 4.8 (both on Windows 10/11).
+# Install with:
+#   $env:HTTP_PROXY='http://127.0.0.1:7897'
+#   $env:HTTPS_PROXY='http://127.0.0.1:7897'
+#   python -m pip install -r requirements-webui.txt
+pywebview==6.2.1
+pythonnet==3.2.1
+clr_loader==0.3.1
+cffi==2.1.1
+bottle==0.13.4
+typing_extensions==4.16.0
+pycparser==3.12
+proxy_tools==0.1.0

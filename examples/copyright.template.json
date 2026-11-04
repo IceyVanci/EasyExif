@@ -1,0 +1,16 @@
+{
+  "name": "copyright",
+  "description": "写入作者、版权与 XMP 权利信息",
+  "exif": {
+    "IFD0.Artist": "Zhang San",
+    "IFD0.Copyright": "(c) 2026 Zhang San"
+  },
+  "xmp": {
+    "dc:creator": ["Zhang San"],
+    "dc:rights": "(c) 2026 Zhang San",
+    "photoshop:Credit": "Zhang San"
+  },
+  "options": {
+    "sync_datetime": true
+  }
+}
