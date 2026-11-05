@@ -12,7 +12,7 @@ from .tiff import Tiff, TiffError
 from .validate import Report, validate
 from .xmp import Xmp
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = ["Jpeg", "Segment", "Metadata", "MetadataError", "Tiff", "TiffError",
            "Report", "validate", "Xmp", "__version__"]

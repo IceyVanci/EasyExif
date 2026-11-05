@@ -28,6 +28,41 @@ class MetadataError(RuntimeError):
 
 EXIF_DATE_FMT = "%Y:%m:%d %H:%M:%S"
 
+RAW_SUFFIXES = {".dng", ".cr2", ".nef", ".arw", ".orf", ".rw2", ".pef", ".srw", ".raw"}
+
+
+def _find_embedded_jpeg(data: bytes) -> bytes | None:
+    """Return the largest embedded JPEG preview in a RAW container."""
+    best: bytes | None = None
+    pos = 0
+    while True:
+        start = data.find(b"\xff\xd8", pos)
+        if start < 0:
+            break
+        end = data.find(b"\xff\xd9", start + 2)
+        if end < 0:
+            break
+        chunk = data[start:end + 2]
+        if len(chunk) >= 1024 and (best is None or len(chunk) > len(best)):
+            best = chunk
+        pos = end + 2
+    return best
+
+
+def _source_size(meta: "Metadata") -> tuple[int | None, int | None]:
+    w = meta.tiff.get("IFD0", 0x0100) if meta.tiff else None
+    h = meta.tiff.get("IFD0", 0x0101) if meta.tiff else None
+    if not w:
+        w = meta.tiff.get("EXIF", 0xA002) if meta.tiff else None
+    if not h:
+        h = meta.tiff.get("EXIF", 0xA003) if meta.tiff else None
+    if isinstance(w, (list, tuple)):
+        w = w[0] if w else None
+    if isinstance(h, (list, tuple)):
+        h = h[0] if h else None
+    return (int(w) if isinstance(w, int) else None,
+            int(h) if isinstance(h, int) else None)
+
 
 def parse_exif_datetime(text: str) -> datetime:
     text = str(text).strip()
@@ -64,6 +99,9 @@ class Metadata:
         self.warnings: list[str] = []
         self.raw_size = 0
         self.mtime: float | None = None
+        self.readonly = False
+        self.raw_format: str | None = None
+        self.preview_data: bytes | None = None
 
     # -- reading -----------------------------------------------------------
     @classmethod
@@ -72,6 +110,25 @@ class Metadata:
         data = obj.path.read_bytes()
         obj.raw_size = len(data)
         obj.mtime = obj.path.stat().st_mtime
+        suffix = obj.path.suffix.lower()
+        if suffix in RAW_SUFFIXES:
+            if data[:2] not in (b"II", b"MM"):
+                raise MetadataError("暂不支持该 RAW 容器（仅支持 TIFF-based RAW）: %s" % path)
+            obj.readonly = True
+            obj.raw_format = suffix[1:].upper()
+            obj.info.format = obj.raw_format
+            try:
+                obj.tiff = Tiff.parse(data)
+                obj.warnings.extend(obj.tiff.warnings)
+            except TiffError as exc:
+                raise MetadataError("无法解析 RAW 元数据: %s" % exc) from exc
+            w, h = _source_size(obj)
+            obj.info.width, obj.info.height = w, h
+            packet = obj.tiff.get("IFD0", 0x02BC)
+            if isinstance(packet, (bytes, bytearray)):
+                obj.xmp = Xmp(bytes(packet).rstrip(b"\0"))
+            obj.preview_data = _find_embedded_jpeg(data)
+            return obj
         if data[:2] == b"\xff\xd8":
             obj.jpeg = Jpeg.parse(data)
             obj.warnings.extend(obj.jpeg.warnings)
@@ -107,6 +164,8 @@ class Metadata:
     def save(self, out: str | os.PathLike | None = None, *,
              backup: bool = False, preserve_time: bool = True,
              atomic: bool = True) -> Path:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式，不支持写回")
         target = Path(out) if out else self.path
         if self.jpeg is not None:
             if self.tiff is not None:
@@ -168,6 +227,8 @@ class Metadata:
         return format_value(ifd, tag, value)
 
     def set(self, name: str, value: Any) -> None:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         if name.upper().startswith("XMP."):
             self.xmp.set(name[4:], value)
             return
@@ -215,6 +276,8 @@ class Metadata:
                               _coerce(SRATIONAL, seconds_to_apex_shutter(seconds)), SRATIONAL)
 
     def delete(self, name: str) -> bool:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         if name.upper().startswith("XMP."):
             return self.xmp.delete(name[4:])
         ifd, tag = resolve_name(name)
@@ -335,6 +398,8 @@ class Metadata:
 
     def set_gps(self, lat: float, lon: float, alt: float | None = None,
                 datum: str = "wgs84", address: str | None = None) -> None:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         lat, lon = gpsmod.convert(lat, lon, datum, "wgs84")
         tiff = self._require_tiff(create=True)
         tiff.set("GPS", 0x0000, b"\x02\x03\x00\x00", BYTE)
@@ -351,6 +416,8 @@ class Metadata:
         self.xmp.set("exif:GPSLongitude", "%.7f" % lon)
 
     def clear_gps(self) -> None:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         if self.tiff and "GPS" in self.tiff.ifds:
             del self.tiff.ifds["GPS"]
             self.tiff.dirty = True
@@ -372,6 +439,8 @@ class Metadata:
         self.set_gps(lat or 0.0, lon or 0.0)
 
     def shift_time(self, delta: timedelta) -> int:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         if not self.tiff:
             return 0
         count = 0
@@ -388,6 +457,8 @@ class Metadata:
 
     def sync_datetime(self) -> None:
         """Copy DateTimeOriginal into DateTime and DateTimeDigitized."""
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         if not self.tiff:
             return
         original = self.tiff.text("EXIF", 0x9003, "")
@@ -398,6 +469,8 @@ class Metadata:
             self.tiff.set("EXIF", 0x9004, original, ASCII)
 
     def clear_metadata(self, keep_icc: bool = True) -> None:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         jpeg = self.jpeg
         if jpeg is None:
             raise MetadataError("clearing metadata is only supported for JPEG")
@@ -422,7 +495,13 @@ class Metadata:
     def thumbnail(self) -> bytes | None:
         return self.tiff.thumbnail if self.tiff else None
 
+    def preview_bytes(self) -> bytes | None:
+        """Embedded preview for RAW files, if one can be extracted."""
+        return self.preview_data if self.readonly else None
+
     def set_thumbnail(self, data: bytes | None) -> None:
+        if self.readonly:
+            raise MetadataError("RAW 文件当前为只读模式")
         tiff = self._require_tiff(create=True)
         tiff.thumbnail = data
         if data is None and "IFD1" in tiff.ifds:

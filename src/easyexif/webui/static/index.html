@@ -14,7 +14,7 @@
       <div class="brand-text">
         <div class="brand-name">
           <strong>EasyExif</strong>
-          <span class="version" id="appVersion">v0.1.0</span>
+          <span class="version" id="appVersion">v0.1.1</span>
         </div>
         <span>Metadata Studio</span>
       </div>
@@ -24,6 +24,8 @@
       <div class="doc-meta">
         <span id="dirtyBadge" class="badge hidden">未保存</span>
         <span id="readonlyBadge" class="badge readonly hidden">预览 · 只读</span>
+        <span id="rawBadge" class="badge readonly hidden">RAW · 只读</span>
+        <span id="editedBadge" class="badge edited hidden">EasyExif 编辑</span>
         <span id="fileMeta" class="muted">打开一张 JPEG 或 TIFF 开始</span>
       </div>
     </div>
@@ -53,7 +55,7 @@
         <button id="btnOpenLarge" class="dropzone">
           <span class="drop-icon">＋</span>
           <span class="drop-title">打开图像</span>
-          <span class="drop-hint">JPEG · TIFF · EXI</span>
+          <span class="drop-hint">JPEG · TIFF · RAW</span>
         </button>
         <dl class="info-list" id="fileInfo">
           <div><dt>格式</dt><dd id="infoFormat">—</dd></div>
@@ -62,7 +64,12 @@
           <div><dt>相机</dt><dd id="infoCamera">—</dd></div>
           <div><dt>镜头</dt><dd id="infoLens">—</dd></div>
           <div><dt>拍摄时间</dt><dd id="infoDate">—</dd></div>
+          <div><dt>镜头库</dt><dd id="infoLensDb">—</dd></div>
         </dl>
+        <div class="bundle-actions">
+          <button id="btnExportBundle" class="btn small" disabled>导出元数据</button>
+          <button id="btnReconstruct" class="btn small" disabled>JSON 重建</button>
+        </div>
       </section>
 
       <section class="card grow">

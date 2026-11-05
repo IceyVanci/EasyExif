@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from easyexif import Metadata
 from easyexif.webui.api import Api
 from easyexif.webui.server import WebUIServer
 from easyexif.webui.session import Session
@@ -65,9 +66,14 @@ class WebUITests(unittest.TestCase):
         self.assertIn(b'id="docTabs"', body)
         self.assertIn(b'id="readonlyBadge"', body)
         self.assertIn(b'id="appVersion"', body)
-        self.assertIn(b'v0.1.0', body)
+        self.assertIn(b'v0.1.1', body)
         self.assertIn(b'validate-disclaimer', body)
         self.assertIn("不能证明图像未经编辑".encode("utf-8"), body)
+        self.assertIn(b'id="btnExportBundle"', body)
+        self.assertIn(b'id="btnReconstruct"', body)
+        self.assertIn(b'id="rawBadge"', body)
+        self.assertIn(b'id="editedBadge"', body)
+        self.assertIn(b'id="infoLensDb"', body)
         status, ctype, body = self.request("GET", "/css/app.css", token="")
         self.assertEqual(status, 200)
         self.assertIn(b"--accent", body)
@@ -80,7 +86,7 @@ class WebUITests(unittest.TestCase):
     def test_health_reports_version(self):
         status, _, body = self.request("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["version"], "0.1.0")
+        self.assertEqual(json.loads(body)["version"], "0.1.1")
 
     def test_auth(self):
         status, _, _ = self.request("GET", "/api/doc", token="")
@@ -212,6 +218,24 @@ class WebUITests(unittest.TestCase):
             "name": "EXIF.DateTimeOriginal", "value": "not-a-date"})
         self.assertEqual(status, 400)
         self.assertFalse(json.loads(body)["ok"])
+
+    def test_bundle_export_inspect_and_reconstruct(self):
+        self.request("POST", "/api/open", {"path": str(SAMPLE)})
+        folder = new_dir()
+        bundle_path = folder / "meta.json"
+        status, _, body = self.request("POST", "/api/bundle/export", {"path": str(bundle_path)})
+        self.assertEqual(status, 200)
+        self.assertTrue(bundle_path.exists())
+        status, _, body = self.request("POST", "/api/bundle/inspect", {"path": str(bundle_path)})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["data"]["source"]["format"], "JPEG")
+        out = folder / "out.jpg"
+        status, _, body = self.request("POST", "/api/bundle/reconstruct", {
+            "bundle": str(bundle_path), "path": str(out), "mode": "replace"})
+        self.assertEqual(status, 200)
+        self.assertTrue(out.exists())
+        meta = Metadata.read(out)
+        self.assertEqual(meta.get_text("IFD0.Software"), "EasyExif 0.1.1")
 
     def test_two_documents_switch_and_close(self):
         while json.loads(self.request("GET", "/api/doc")[2])["doc"]["docs"]:

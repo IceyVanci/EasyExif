@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import __version__, gps
+from .bundle import BundleError, import_bundle, load_bundle, write_bundle
+from .lensdb import lens_info
 from .validate import validate as run_validate
 from .batch import (BUILTIN_PROFILES, Profile, apply_template, export_csv,
                     export_json, iter_images, rename, sort_into)
@@ -237,6 +239,57 @@ def cmd_segments(args) -> int:
         dims = meta.jpeg.dimensions()
         print("\nDimensions: %sx%s" % dims if dims else "")
     return EXIT_OK
+
+
+def cmd_export_metadata(args) -> int:
+    try:
+        meta = Metadata.read(args.file)
+        out = args.out or (Path(args.file).stem + ".metadata.json")
+        data = write_bundle(meta, out)
+        print("metadata bundle written -> %s" % out)
+        print("tags: %d, source: %s" % (len(data["exif"]["tags"]), data["source"]["format"]))
+        return EXIT_OK
+    except (MetadataError, BundleError, OSError, ValueError) as exc:
+        return _error(str(exc))
+
+
+def cmd_import_metadata(args) -> int:
+    try:
+        meta = Metadata.read(args.file)
+        bundle = load_bundle(args.bundle)
+        result = import_bundle(meta, bundle, args.out, mode=args.mode)
+        print("wrote %s" % result["output"])
+        print("marker: %s" % result["marker"]["software"])
+        if result["dropped_makernote"]:
+            print("warning: MakerNote dropped (source/target camera mismatch)")
+        return EXIT_OK
+    except (MetadataError, BundleError, OSError, ValueError) as exc:
+        return _error(str(exc))
+
+
+cmd_reconstruct = cmd_import_metadata
+
+
+def cmd_lens(args) -> int:
+    try:
+        meta = Metadata.read(args.file)
+        info = lens_info(meta)
+        if not info.get("available"):
+            print("Lensfun 未加载：%s" % info.get("reason", "没有数据包"))
+            return EXIT_OK
+        camera = info.get("camera") or {}
+        lens = info.get("lens") or {}
+        print("Camera: %s %s" % (camera.get("maker", ""), camera.get("model", "")))
+        print("Lens  : %s %s" % (lens.get("maker", ""), lens.get("model", "")))
+        print("Focal : %s mm%s" % (info.get("focal") or "?",
+                                     " (35mm: %s mm)" % info["equiv_focal"] if info.get("equiv_focal") else ""))
+        print("Aperture: f/%s" % (info.get("fnumber") or "?"))
+        print("Category: %s" % (info.get("category") or "未知"))
+        for warning in info.get("warnings") or []:
+            print("Warning: %s" % warning)
+        return EXIT_OK
+    except (MetadataError, OSError, ValueError) as exc:
+        return _error(str(exc))
 
 
 def cmd_validate(args) -> int:
@@ -484,6 +537,29 @@ def build_parser() -> argparse.ArgumentParser:
     seg.add_argument("--backup", action="store_true")
     seg.add_argument("--json", action="store_true")
     seg.set_defaults(func=cmd_segments)
+
+    exp = sub.add_parser("export", help="export a metadata-only JSON bundle")
+    exp.add_argument("file")
+    exp.add_argument("--out", "-o")
+    exp.set_defaults(func=cmd_export_metadata)
+
+    imp = sub.add_parser("import", help="overlay a JSON metadata bundle on JPEG/TIFF")
+    imp.add_argument("file")
+    imp.add_argument("bundle")
+    imp.add_argument("--out", "-o")
+    imp.add_argument("--mode", choices=["replace", "fill"], default="replace")
+    imp.set_defaults(func=cmd_import_metadata)
+
+    rec = sub.add_parser("reconstruct", help="metadata-overlay reconstruction from JSON")
+    rec.add_argument("file")
+    rec.add_argument("bundle")
+    rec.add_argument("--out", "-o")
+    rec.add_argument("--mode", choices=["replace", "fill"], default="replace")
+    rec.set_defaults(func=cmd_reconstruct)
+
+    lens = sub.add_parser("lens", help="show optional Lensfun camera/lens info")
+    lens.add_argument("file")
+    lens.set_defaults(func=cmd_lens)
 
     val = sub.add_parser("validate", help="originality / consistency report")
     val.add_argument("files", nargs="+")

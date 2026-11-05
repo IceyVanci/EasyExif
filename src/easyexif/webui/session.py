@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..jpeg import Jpeg
+from ..lensdb import lens_info
 from ..metadata import Metadata, MetadataError
 from ..tiff import Tiff
 from ..tags import display_name, display_value
@@ -223,6 +224,8 @@ class Session:
     def edit(self, ops: list[dict]) -> dict:
         if not self.meta:
             raise ValueError("没有打开文件")
+        if self.meta.readonly:
+            raise ValueError("RAW 文件当前为只读模式，不能编辑")
         if not ops:
             return self.doc()
         before = self.capture()
@@ -304,6 +307,8 @@ class Session:
     def save(self, path: str | None = None) -> dict:
         if not self.meta:
             raise ValueError("没有打开文件")
+        if self.meta.readonly:
+            raise ValueError("RAW 文件当前为只读模式，不能保存")
         target = Path(path) if path else self.meta.path
         data = self.current_bytes()
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -370,10 +375,14 @@ class Session:
             "path": str(meta.path),
             "name": meta.path.name,
             "format": meta.info.format,
+            "readonly": bool(meta.readonly),
+            "raw_format": meta.raw_format,
+            "edited_by_easyexif": ("easyexif" in (meta.get_text("IFD0.Software", "") + " " + str(meta.xmp.get("xmp:CreatorTool", ""))).lower()),
             "dirty": self.dirty,
             "can_undo": bool(self.undo),
             "can_redo": bool(self.redo),
             "summary": summary,
+            "lens": lens_info(meta),
             "rows": rows,
             "xmp": {"text": meta.xmp.text if meta.xmp.exists else "",
                     "props": jsonable(meta.xmp.to_dict())},
@@ -388,6 +397,8 @@ class Session:
     def set_xmp_text(self, text: str) -> dict:
         if not self.meta:
             raise ValueError("没有打开文件")
+        if self.meta.readonly:
+            raise ValueError("RAW 文件当前为只读模式，不能编辑")
         before = self.capture()
         self.meta.xmp = Xmp(text)
         self.undo.append(before)
@@ -422,7 +433,9 @@ class Session:
             return state.preview_cache[1]
         from PIL import Image
         import io
-        with Image.open(meta.path) as im:
+        preview = meta.preview_bytes()
+        source = io.BytesIO(preview) if preview else meta.path
+        with Image.open(source) as im:
             im = im.convert("RGB")
             im.thumbnail((max_size, max_size))
             buf = io.BytesIO()

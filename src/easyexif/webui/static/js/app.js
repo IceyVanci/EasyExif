@@ -9,7 +9,7 @@ const state = {
   metaScope: 'shooting',
   selected: null,
   mode: 'edit',
-  version: '0.1.0',
+  version: '0.1.1',
   reports: {},
   zoom: 1,
   fit: true,
@@ -78,13 +78,17 @@ function renderTop() {
   }
   $('#fileMeta').textContent = has ? meta.join(' · ') : '打开一张 JPEG 或 TIFF 开始';
   $('#dirtyBadge').classList.toggle('hidden', !has || !doc.dirty);
-  $('#btnSave').disabled = !has;
+  $('#rawBadge').classList.toggle('hidden', !has || !doc.readonly);
+  $('#editedBadge').classList.toggle('hidden', !has || !doc.edited_by_easyexif);
+  $('#btnSave').disabled = !has || !!doc.readonly;
   $('#btnClose').disabled = !has;
-  $('#btnUndo').disabled = !has || !doc.can_undo;
-  $('#btnRedo').disabled = !has || !doc.can_redo;
+  $('#btnUndo').disabled = !has || !!doc.readonly || !doc.can_undo;
+  $('#btnRedo').disabled = !has || !!doc.readonly || !doc.can_redo;
   $('#btnValidate').disabled = !has;
   $('#btnBatch').disabled = false;
-  $$('.quick').forEach(function (b) { b.disabled = !has; });
+  $('#btnExportBundle').disabled = !has;
+  $('#btnReconstruct').disabled = !has || !!doc.readonly;
+  $$('.quick').forEach(function (b) { b.disabled = !has || !!doc.readonly; });
   renderDocTabs();
 }
 
@@ -157,18 +161,20 @@ function toggleMode() {
 function renderMode() {
   const doc = state.doc;
   const preview = state.mode === 'preview' && !!doc;
-  const editable = !!doc && !preview;
+  const readonly = !!(doc && doc.readonly);
+  const editable = !!doc && !preview && !readonly;
   $('#app').classList.toggle('mode-preview', preview);
-  $('#readonlyBadge').classList.toggle('hidden', !preview);
+  $('#readonlyBadge').classList.toggle('hidden', !preview || readonly);
   const sw = $('#modeSwitch');
   sw.setAttribute('aria-checked', preview ? 'true' : 'false');
-  sw.disabled = !doc;
-  sw.title = preview ? '当前：预览模式（仅查看，编辑已禁用）' : '当前：编辑模式（点击进入只读预览）';
+  sw.disabled = !doc || readonly;
+  sw.title = readonly ? 'RAW 只读文件' : (preview ? '当前：预览模式（仅查看，编辑已禁用）' : '当前：编辑模式（点击进入只读预览）');
 
   $('#btnSave').disabled = !editable;
   $('#btnUndo').disabled = !editable || !doc.can_undo;
   $('#btnRedo').disabled = !editable || !doc.can_redo;
   $('#btnBatch').disabled = preview;
+  $('#btnReconstruct').disabled = !doc || readonly;
   $('#btnAddTag').disabled = !editable;
   $('#btnDeleteTag').disabled = !editable;
   $('#btnApplyXmp').disabled = !editable;
@@ -181,16 +187,17 @@ function renderMode() {
   const gpsSubmit = $('#gpsForm button[type="submit"]');
   if (gpsSubmit) gpsSubmit.disabled = !editable;
   $$('.quick').forEach(function (b) {
-    b.disabled = !doc || (preview && b.dataset.quick !== 'validate');
+    b.disabled = !doc || (preview && b.dataset.quick !== 'validate') || (readonly && b.dataset.quick !== 'validate');
   });
 }
 
 function renderInfo() {
   const doc = state.doc;
   if (!doc) {
-    ['infoFormat', 'infoSize', 'infoBytes', 'infoCamera', 'infoLens', 'infoDate'].forEach(function (id) {
+    ['infoFormat', 'infoSize', 'infoBytes', 'infoCamera', 'infoLens', 'infoDate', 'infoLensDb'].forEach(function (id) {
       $('#' + id).textContent = '—';
     });
+    $('#infoLensDb').title = '';
     return;
   }
   const cam = doc.summary.camera || {};
@@ -201,6 +208,18 @@ function renderInfo() {
   $('#infoCamera').textContent = [cam.make, cam.model].filter(Boolean).join(' ') || '—';
   $('#infoLens').textContent = cam.lens || '—';
   $('#infoDate').textContent = exp.date || '—';
+  const lens = doc.lens || {};
+  let lensText = '未加载';
+  if (lens.available) {
+    if (lens.lens && lens.lens.model) {
+      lensText = lens.lens.model + (lens.category ? ' · ' + lens.category : '');
+    } else {
+      lensText = '未匹配';
+    }
+    if (lens.warnings && lens.warnings.length) lensText = '⚠ ' + lensText;
+  }
+  $('#infoLensDb').textContent = lensText;
+  $('#infoLensDb').title = lens.warnings && lens.warnings.length ? lens.warnings.join('\n') : (lens.source || '');
 }
 
 function renderPreview() {
@@ -374,6 +393,10 @@ function editValue(row) {
 
 function ensureEditable() {
   if (!state.doc) return false;
+  if (state.doc.readonly) {
+    toast('RAW 文件当前为只读模式', 'info');
+    return false;
+  }
   if (state.mode === 'preview') {
     toast('预览模式已禁用编辑，切回编辑模式后可修改', 'info');
     return false;
@@ -1207,6 +1230,69 @@ async function openDropped(input) {
 }
 window.easyexifOpenDropped = openDropped;
 
+async function exportBundle() {
+  if (!state.doc) return;
+  if (state.doc.dirty) { toast('请先保存当前修改，再导出元数据包', 'info'); return; }
+  try {
+    const out = await api.chooseJsonSave(state.doc.name + '.metadata.json');
+    if (!out) return;
+    const res = await api.exportBundle(out);
+    toast('已导出 ' + res.tags + ' 项元数据', 'success');
+    setStatus('已导出元数据包', out);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function confirmReconstruct(info) {
+  return new Promise(function (resolve) {
+    const body = document.createElement('div');
+    body.appendChild(el('p', 'modal-text', '此操作不会修改像素，但会覆盖当前文件的拍摄元数据，并写入 EasyExif 编辑标记。'));
+    const source = info.source || {};
+    const lines = [
+      '来源：' + (source.file || '未知'),
+      '相机：' + ([source.make, source.model].filter(Boolean).join(' ') || '未知'),
+      '尺寸：' + (source.width || '?') + ' × ' + (source.height || '?'),
+      '标记：' + (info.marker || 'EasyExif')
+    ];
+    lines.forEach(function (line) { body.appendChild(el('p', 'muted', line)); });
+    body.appendChild(el('p', 'muted', '输出会另存为新文件，不会覆盖当前文件。'));
+    modal({
+      title: '元数据覆盖重建',
+      body: body,
+      actions: [
+        { label: '取消', onClick: function () { resolve(false); } },
+        { label: '继续', cls: 'primary', onClick: function () { resolve(true); } }
+      ],
+      onClose: function () { resolve(false); }
+    });
+  });
+}
+
+async function reconstructBundle() {
+  const doc = state.doc;
+  if (!doc) return;
+  if (doc.readonly) { toast('RAW 文件当前为只读模式', 'info'); return; }
+  if (doc.dirty) { toast('请先保存当前修改，再执行元数据覆盖重建', 'info'); return; }
+  try {
+    const bundlePath = await api.chooseJson();
+    if (!bundlePath) return;
+    const inspected = await api.inspectBundle(bundlePath);
+    if (!(await confirmReconstruct(inspected.data))) return;
+    const stem = doc.name.replace(/\.[^.]+$/, '');
+    const out = await api.chooseSave(stem + '.reconstructed' + (doc.name.match(/\.[^.]+$/) || ['.jpg'])[0]);
+    if (!out) return;
+    setStatus('正在重建元数据…');
+    const res = await api.reconstructBundle(bundlePath, out, 'replace');
+    toast('已生成 ' + res.data.output, 'success');
+    const opened = await api.open(res.data.output);
+    if (opened.ok && opened.doc) setDoc(opened.doc);
+  } catch (err) {
+    toast(err.message, 'error');
+    setStatus('重建失败');
+  }
+}
+
 async function saveDoc(options) {
   if (!state.doc) return false;
   const force = !!(options && options.force);
@@ -1292,6 +1378,8 @@ function bind() {
   $('#btnOpenLarge').addEventListener('click', openDialog);
   $('#btnEmptyOpen').addEventListener('click', openDialog);
   $('#btnSave').addEventListener('click', saveDoc);
+  $('#btnExportBundle').addEventListener('click', exportBundle);
+  $('#btnReconstruct').addEventListener('click', reconstructBundle);
   $('#btnClose').addEventListener('click', closeDoc);
   $('#btnUndo').addEventListener('click', undo);
   $('#btnRedo').addEventListener('click', redo);

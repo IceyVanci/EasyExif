@@ -23,13 +23,21 @@ def main(argv: list[str] | None = None) -> int:
     root.update_idletasks()
     path = ""
     try:
-        if kind == "save":
+        if kind in ("save", "json-save"):
             path = filedialog.asksaveasfilename(
                 parent=root,
-                title="保存图像",
-                initialfile=args[1] if len(args) > 1 else "output.jpg",
-                defaultextension=".jpg",
-                filetypes=[("JPEG", "*.jpg"), ("TIFF", "*.tif"), ("所有文件", "*.*")],
+                title="保存 JSON 元数据" if kind == "json-save" else "保存图像",
+                initialfile=args[1] if len(args) > 1 else ("metadata.json" if kind == "json-save" else "output.jpg"),
+                defaultextension=".json" if kind == "json-save" else ".jpg",
+                filetypes=([("JSON", "*.json"), ("所有文件", "*.*")]
+                           if kind == "json-save" else
+                           [("JPEG", "*.jpg"), ("TIFF", "*.tif"), ("所有文件", "*.*")]),
+            )
+        elif kind == "json-open":
+            path = filedialog.askopenfilename(
+                parent=root,
+                title="打开 JSON 元数据",
+                filetypes=[("JSON", "*.json"), ("所有文件", "*.*")],
             )
         else:
             path = filedialog.askopenfilename(

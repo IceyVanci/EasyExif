@@ -33,7 +33,7 @@ def launch_pywebview(url: str, server=None, session=None, width: int = 1440,
                     webview.OPEN_DIALOG,
                     allow_multiple=True,
                     file_types=(
-                        "Images (*.jpg;*.jpeg;*.jpe;*.tif;*.tiff;*.exi;*.exif)",
+                        "Images (*.jpg;*.jpeg;*.jpe;*.tif;*.tiff;*.exi;*.exif;*.dng;*.cr2;*.nef;*.arw)",
                         "All files (*.*)",
                     ),
                 )
@@ -42,6 +42,32 @@ def launch_pywebview(url: str, server=None, session=None, width: int = 1440,
             except Exception:
                 pass
             return []
+
+        def choose_json(self):
+            try:
+                result = self._window.create_file_dialog(
+                    webview.OPEN_DIALOG,
+                    allow_multiple=False,
+                    file_types=("JSON (*.json)", "All files (*.*)"),
+                )
+                if result:
+                    return str(result[0] if isinstance(result, (list, tuple)) else result)
+            except Exception:
+                pass
+            return ""
+
+        def choose_json_save(self, default="metadata.json"):
+            try:
+                result = self._window.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    save_filename=default or "metadata.json",
+                    file_types=("JSON (*.json)", "All files (*.*)"),
+                )
+                if result:
+                    return str(result[0] if isinstance(result, (list, tuple)) else result)
+            except Exception:
+                pass
+            return ""
 
     bridge = Bridge()
     window = webview.create_window(

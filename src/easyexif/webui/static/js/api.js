@@ -45,6 +45,29 @@ export const api = {
     const res = await request('POST', '/api/dialog/choose', {});
     return res.ok && res.path ? [res.path] : [];
   },
+  chooseJson: async function () {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.choose_json) {
+      return await window.pywebview.api.choose_json() || '';
+    }
+    const res = await request('POST', '/api/dialog/json-open', {});
+    return res.ok ? (res.path || '') : '';
+  },
+  chooseJsonSave: async function (defaultName) {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.choose_json_save) {
+      return await window.pywebview.api.choose_json_save(defaultName || 'metadata.json') || '';
+    }
+    const res = await request('POST', '/api/dialog/json-save', { default: defaultName || 'metadata.json' });
+    return res.ok ? (res.path || '') : '';
+  },
+  chooseSave: async function (defaultName) {
+    const res = await request('POST', '/api/dialog/save', { default: defaultName || 'output.jpg' });
+    return res.ok ? (res.path || '') : '';
+  },
+  exportBundle: function (path) { return request('POST', '/api/bundle/export', { path: path }); },
+  inspectBundle: function (path) { return request('POST', '/api/bundle/inspect', { path: path }); },
+  reconstructBundle: function (bundle, path, mode) {
+    return request('POST', '/api/bundle/reconstruct', { bundle: bundle, path: path, mode: mode || 'replace' });
+  },
   openDialog: function () { return request('POST', '/api/dialog/open', {}); },
   open: function (path, slot) {
     return request('POST', '/api/open', { path: path, slot: slot === undefined ? null : slot });

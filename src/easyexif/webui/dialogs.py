@@ -51,3 +51,11 @@ def open_file() -> str:
 
 def save_file(default_name: str = "output.jpg") -> str:
     return _run_helper("save", default_name)
+
+
+def open_json() -> str:
+    return _run_helper("json-open")
+
+
+def save_json(default_name: str = "metadata.json") -> str:
+    return _run_helper("json-save", default_name)

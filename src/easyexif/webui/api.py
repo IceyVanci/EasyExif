@@ -10,7 +10,8 @@ from typing import Any
 from .. import __version__
 from .. import batch as batchmod
 from ..batch import BUILTIN_PROFILES, Profile, export_csv, iter_images, rename, sort_into, apply_template
-from ..metadata import MetadataError, preview_value
+from ..bundle import import_bundle, inspect_bundle, load_bundle, write_bundle
+from ..metadata import Metadata, MetadataError, preview_value
 from ..tags import tag_help
 from ..template import Template, builtin_templates
 from . import dialogs
@@ -66,6 +67,12 @@ class Api:
                 default = body.get("default") or (self.session.meta.path.name if self.session.meta else "output.jpg")
                 selected = dialogs.save_file(default)
                 return json_response({"ok": True, "path": selected} if selected else {"ok": False, "error": "已取消"})
+            if method == "POST" and path == "/api/dialog/json-open":
+                selected = dialogs.open_json()
+                return json_response({"ok": True, "path": selected} if selected else {"ok": False, "error": "已取消"})
+            if method == "POST" and path == "/api/dialog/json-save":
+                selected = dialogs.save_json(str(body.get("default") or "metadata.json"))
+                return json_response({"ok": True, "path": selected} if selected else {"ok": False, "error": "已取消"})
             if method == "POST" and path == "/api/edit":
                 return json_response({"ok": True, "doc": self.session.edit(body.get("ops", []))})
             if method == "POST" and path == "/api/undo":
@@ -74,6 +81,32 @@ class Api:
                 return json_response({"ok": True, "doc": self.session.redo_last()})
             if method == "POST" and path == "/api/save":
                 return json_response({"ok": True, "doc": self.session.save(body.get("path"))})
+            if method == "POST" and path == "/api/bundle/export":
+                if not self.session.meta:
+                    raise ValueError("没有打开文件")
+                out = str(body.get("path") or "")
+                if not out:
+                    raise ValueError("没有选择导出路径")
+                data = write_bundle(self.session.meta, out)
+                return json_response({"ok": True, "path": out,
+                                      "tags": len(data["exif"]["tags"]),
+                                      "source": data["source"]})
+            if method == "POST" and path == "/api/bundle/inspect":
+                bundle = load_bundle(str(body.get("path") or ""))
+                return json_response({"ok": True, "data": inspect_bundle(bundle)})
+            if method == "POST" and path == "/api/bundle/reconstruct":
+                if not self.session.meta:
+                    raise ValueError("没有打开文件")
+                target_path = str(body.get("target") or self.session.meta.path)
+                if os.path.abspath(target_path) != os.path.abspath(str(self.session.meta.path)):
+                    raise ValueError("目标文件与当前文档不一致")
+                bundle = load_bundle(str(body.get("bundle") or ""))
+                out = str(body.get("path") or "")
+                if not out:
+                    raise ValueError("没有选择输出路径")
+                target = Metadata.read(target_path)
+                result = import_bundle(target, bundle, out, mode=str(body.get("mode") or "replace"))
+                return json_response({"ok": True, "data": result})
             if method == "GET" and path == "/api/xmp":
                 return json_response({"ok": True, "text": self.session.xmp_text()})
             if method == "POST" and path == "/api/xmp":
