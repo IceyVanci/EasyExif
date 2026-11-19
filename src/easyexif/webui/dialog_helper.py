@@ -44,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
                 parent=root,
                 title="打开图像",
                 filetypes=[("JPEG / TIFF", "*.jpg *.jpeg *.jpe *.tif *.tiff *.exi *.exif"),
+                           ("RAW 只读", "*.dng *.cr2 *.nef *.nrw *.arw *.orf *.rw2 *.pef "
+                                       "*.srw *.raw *.3fr *.fff *.iiq *.mrw *.erf *.kdc "
+                                       "*.dcr *.mef *.mos *.rwl *.pxn"),
                            ("所有文件", "*.*")],
             )
     finally:

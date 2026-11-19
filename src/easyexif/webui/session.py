@@ -12,7 +12,7 @@ from typing import Any
 from ..jpeg import Jpeg
 from ..lensdb import lens_info
 from ..metadata import Metadata, MetadataError
-from ..tiff import Tiff
+from ..tiff import Tiff, TiffError
 from ..tags import display_name, display_value
 from ..xmp import Xmp
 from ..validate import validate as run_validate
@@ -301,7 +301,11 @@ class Session:
             t = Tiff.parse(self.meta.tiff.to_bytes())
             if self.meta.xmp.exists:
                 t.set("IFD0", 0x02BC, self.meta.xmp.to_bytes(), 1)
-            return t.to_bytes()
+            try:
+                return t.to_bytes(include_image=True,
+                                  image_source=self.meta.source_data)
+            except TiffError as exc:
+                raise ValueError(str(exc)) from exc
         raise ValueError("没有可保存的数据")
 
     def save(self, path: str | None = None) -> dict:

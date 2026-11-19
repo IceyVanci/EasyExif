@@ -382,35 +382,63 @@ def _plausible(fields: list[MakerField]) -> bool:
     return sum(1 for f in fields if f.tag != 0) >= max(1, len(fields) // 2)
 
 
-def _detect(maker: str, raw: bytes) -> tuple[str, int, int, int]:
-    """Return (family, header_len, ifd_off, offset_delta)."""
+def _layouts(maker: str, raw: bytes, endian: str
+             ) -> list[tuple[int, int, int | None, str, bool]]:
+    """Candidate note layouts as (header_len, ifd_off, delta, endian, tiff_relative).
+
+    The delta is subtracted from a stored value offset to get a note-relative
+    position; None means the offsets are absolute inside the EXIF payload and
+    the caller substitutes the note own position.  Several candidates are
+    returned because vendors changed their header between camera generations:
+    the first one that produces plausible fields wins, so a wrong guess falls
+    through to "unparsed" instead of showing garbage.
+    """
     if raw.startswith(b"Nikon\0"):
         if raw[6:7] == b"\x02":
-            return "Nikon", 10, 10, 0
-        return "Nikon", 8, 8, -1  # -1 replaced by caller with absolute offset
+            # Nikon type 3: a ten byte header followed by a complete TIFF
+            # header ("II"/"MM", magic 42, offset to the IFD).  Its byte order
+            # and offsets are independent of the outer EXIF block.
+            marker = raw[10:12] if len(raw) >= 12 else b""
+            note_endian = ">" if marker == b"MM" else "<" if marker == b"II" else endian
+            ifd_off = 18
+            if marker in (b"II", b"MM") and len(raw) >= 18:
+                try:
+                    ifd_off = 10 + struct.unpack_from(note_endian + "I", raw, 14)[0]
+                except struct.error:
+                    pass
+            return [(10, ifd_off, -10, note_endian, False)]
+        # Nikon type 1 keeps the historical "offsets are absolute in the
+        # payload" handling; its layout is unchanged by this fix.
+        return [(8, 8, None, endian, True)]
     if raw.startswith(b"SONY"):
-        return "Sony", 12, 12, 0
+        return [(12, 12, 0, endian, False)]
     if raw.startswith(b"OLYMP"):
-        return "Olympus", 12 if len(raw) > 8 and raw[6:8] in (b"II", b"MM") else 6, \
-               12 if len(raw) > 8 and raw[6:8] in (b"II", b"MM") else 6, 0
+        if len(raw) > 8 and raw[6:8] in (b"II", b"MM"):
+            return [(12, 12, 0, endian, False), (8, 8, 0, endian, False)]
+        # "OLYMP\\0" plus a two byte version, then the IFD.
+        return [(8, 8, 0, endian, False), (6, 6, 0, endian, False)]
     if raw.startswith(b"FUJIFILM") and len(raw) > 12:
-        off = struct.unpack_from(">I", raw, 8)[0]
-        return "Fujifilm", 8, 8 + off, 0
+        try:
+            off = struct.unpack_from(">I", raw, 8)[0]
+        except struct.error:
+            off = 12
+        # The offset is measured from the start of the note.
+        return [(8, off, 0, ">", False)]
     if raw.startswith(b"AOC\0"):
-        return "Pentax", 4, 4, 0
+        return [(6, 6, 0, endian, False), (4, 4, 0, endian, False)]
     if raw.startswith(b"PENTAX"):
-        return "Pentax", 8, 8, 0
+        return [(8, 8, 0, endian, False)]
     if raw.startswith(b"Apple"):
-        return "Apple", 14, 14, -1
+        return [(14, 14, None, endian, True)]
     if raw.startswith(b"SAMSUNG"):
-        return "Samsung", 8, 8, 0
+        return [(8, 8, 0, endian, False)]
     if raw.startswith(b"Panasonic"):
-        return "Panasonic", 12, 12, 0
+        return [(12, 12, 0, endian, False)]
     if raw.startswith(b"DJI"):
-        return "DJI", 4, 4, 0
+        return [(4, 4, 0, endian, False)]
     if maker in ("Canon", "Apple"):
-        return maker, 0, 0, -1
-    return maker, 0, 0, 0
+        return [(0, 0, None, endian, True)]
+    return [(0, 0, 0, endian, False)]
 
 
 def parse_makernote(make: str, raw: bytes, endian: str,
@@ -425,22 +453,31 @@ def parse_makernote(make: str, raw: bytes, endian: str,
                 break
     if family is None:
         family = "Canon" if len(raw) > 16 and _looks_like_ifd(raw, 0, endian) else "Unknown"
-    family, header_len, ifd_off, delta = _detect(family, raw)
-    tiff_relative = delta == -1
-    if tiff_relative:
-        delta = tiff_offset
     table = MAKER_TAGS.get(family, {})
-    fields = _read_ifd(raw, ifd_off, endian, delta, table, family)
-    if not _plausible(fields):
-        alt_delta = tiff_offset if family in ("Canon", "Apple", "Nikon") else 0
+    layouts = _layouts(family, raw, endian)
+    chosen: tuple[int, int, int, str, bool] | None = None
+    fields: list[MakerField] = []
+    for header_len, ifd_off, delta, note_endian, tiff_relative in layouts:
+        effective = tiff_offset if delta is None else delta
+        fields = _read_ifd(raw, ifd_off, note_endian, effective, table, family)
+        if _plausible(fields):
+            chosen = (header_len, ifd_off, effective, note_endian, tiff_relative)
+            break
+    if chosen is None:
+        # Last resort: a few notes keep the IFD right at offset zero.
+        alt_delta = tiff_offset if family in ("Canon", "Apple") else 0
         alt = _read_ifd(raw, 0, endian, alt_delta, table, family)
         if _plausible(alt):
-            fields, ifd_off, header_len = alt, 0, 0
-            delta, tiff_relative = alt_delta, (alt_delta != 0 or family in ("Canon", "Apple"))
-        elif not _plausible(fields):
-            return MakerNote(family, raw, endian, header_len, delta, tiff_relative,
-                             False, [], ["unparsed"])
-    note = MakerNote(family, raw, endian, header_len, delta, tiff_relative, False, fields)
+            chosen = (0, 0, alt_delta, endian, family in ("Canon", "Apple"))
+            fields = alt
+        else:
+            header_len, ifd_off, delta, note_endian, tiff_relative = layouts[0]
+            effective = tiff_offset if delta is None else delta
+            return MakerNote(family, raw, note_endian, header_len, effective,
+                             tiff_relative, False, [], ["unparsed"])
+    header_len, ifd_off, delta, note_endian, tiff_relative = chosen
+    note = MakerNote(family, raw, note_endian, header_len, delta, tiff_relative, False,
+                     fields)
     note.encodable = tiff_relative
     _decorate(note)
     return note

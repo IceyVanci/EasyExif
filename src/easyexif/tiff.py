@@ -24,6 +24,11 @@ MAKERNOTE_TAG = 0x927C
 # Tags containing absolute offsets that we cannot safely relocate on rebuild.
 UNSAFE_TAGS = {0x014A: "SubIFDs"}
 
+STRIP_OFFSETS, STRIP_BYTE_COUNTS = 0x0111, 0x0117
+TILE_OFFSETS, TILE_BYTE_COUNTS = 0x0144, 0x0145
+IMAGE_DATA_TAGS = ((STRIP_OFFSETS, STRIP_BYTE_COUNTS), (TILE_OFFSETS, TILE_BYTE_COUNTS))
+PAGE_NAMES = ("IFD0", "IFD1", "IFD2", "IFD3")
+
 
 class TiffError(ValueError):
     pass
@@ -118,6 +123,10 @@ class Tiff:
             name = "IFD%d" % idx
             if name not in obj.ifds:
                 obj._parse_ifd(name, nxt, data, {first})
+            if name not in obj.ifds:
+                # The offset was rejected (out of range or a loop); the warning
+                # is already recorded, so stop the chain instead of crashing.
+                break
             nxt = obj.ifds[name].next_offset
             idx += 1
         # linked EXIF / GPS
@@ -254,14 +263,25 @@ class Tiff:
         return self.makernote.get(name)
 
     # -- serialization -----------------------------------------------------
-    def to_bytes(self) -> bytes:
-        self._validate_for_write()
+    def to_bytes(self, *, include_image: bool = False,
+                 image_source: bytes | None = None) -> bytes:
+        self._validate_for_write(include_image)
         endian = self.endian
         if self.thumbnail and "IFD1" not in self.ifds:
             self.ifds["IFD1"] = IFD("IFD1")
-        names = [n for n in ("IFD0", "EXIF", "GPS", "Interop", "IFD1") if n in self.ifds]
+        pages = [n for n in PAGE_NAMES if n in self.ifds]
+        names = [n for n in ("IFD0", "EXIF", "GPS", "Interop") if n in self.ifds]
         if "IFD0" not in names:
             names.insert(0, "IFD0")
+        names.extend(n for n in pages if n != "IFD0")
+        # A whole-file write must carry the pixel payload across, otherwise the
+        # rebuilt TIFF keeps stale strip offsets and the image is lost.
+        payloads: list[tuple[str, int, list[memoryview]]] = []
+        if include_image:
+            source = image_source if image_source is not None \
+                else getattr(self, "_data", None)
+            payloads = self._image_payloads(source)
+        planned = {(name, tag): len(chunks) for name, tag, chunks in payloads}
         # Build the entry plan (tag, type, count, value bytes, external?)
         plan: dict[str, list[tuple[int, int, int, bytes, bool]]] = {}
         extras: dict[str, int] = {}
@@ -270,6 +290,10 @@ class Tiff:
             entries: list[tuple[int, int, int, bytes, bool]] = []
             for tag in sorted(ifd.entries):
                 entry = ifd.entries[tag]
+                if (name, tag) in planned:
+                    count = planned[(name, tag)]
+                    entries.append((tag, LONG, count, b"\0" * (4 * count), 4 * count > 4))
+                    continue
                 if tag in POINTER_TAGS or tag in UNSAFE_TAGS:
                     continue
                 if name == "IFD1" and tag in (THUMB_OFFSET, THUMB_LENGTH):
@@ -330,6 +354,23 @@ class Tiff:
             if not mn_bytes:
                 mn_bytes = self.makernote.raw
             cursor += len(mn_bytes)
+        # Image payloads are copied verbatim; only their offsets change.
+        payload_offsets: dict[tuple[str, int], list[int]] = {}
+        for name, tag, chunks in payloads:
+            offsets: list[int] = []
+            for chunk in chunks:
+                cursor = _align(cursor, 2)
+                offsets.append(cursor)
+                cursor += len(chunk)
+            payload_offsets[(name, tag)] = offsets
+        for name in names:
+            plan[name] = [
+                (tag, typ, count,
+                 b"".join(struct.pack(endian + "I", o) for o in payload_offsets[(name, tag)])
+                 if (name, tag) in payload_offsets else data,
+                 ext)
+                for tag, typ, count, data, ext in plan[name]
+            ]
         total = cursor
 
         out = bytearray(total)
@@ -360,22 +401,45 @@ class Tiff:
                     out[off:off + len(data)] = data
                 else:
                     out[base + 8:base + 8 + len(data)] = data
-            nxt = table_offsets.get("IFD1", 0) if name == "IFD0" and "IFD1" in self.ifds else 0
+            nxt = 0
+            if name in pages:
+                pos = pages.index(name)
+                if pos + 1 < len(pages):
+                    nxt = table_offsets[pages[pos + 1]]
             struct.pack_into(endian + "I", out, toff + 2 + 12 * len(entries), nxt)
 
         if self.thumbnail and thumb_offset is not None:
             out[thumb_offset:thumb_offset + len(self.thumbnail)] = self.thumbnail
         if self.makernote is not None and mn_offset is not None and mn_bytes:
             out[mn_offset:mn_offset + len(mn_bytes)] = mn_bytes
+        for name, tag, chunks in payloads:
+            for offset, chunk in zip(payload_offsets[(name, tag)], chunks):
+                out[offset:offset + len(chunk)] = chunk
         return bytes(out)
 
-    def _validate_for_write(self) -> None:
-        for name in list(self.ifds):
-            ifd = self.ifds[name]
-            for tag in list(ifd.entries):
-                if tag in UNSAFE_TAGS:
-                    self.warnings.append("dropped unsupported tag %s" % UNSAFE_TAGS[tag])
-                    ifd.entries.pop(tag, None)
+    def _validate_for_write(self, include_image: bool = False) -> None:
+        if include_image:
+            # Sub-IFDs hold their own tables and payload; the rebuild cannot
+            # relocate them, so refuse instead of writing a broken file.
+            for name in PAGE_NAMES:
+                ifd = self.ifds.get(name)
+                if ifd is not None and 0x014A in ifd.entries:
+                    raise TiffError(
+                        "该 TIFF 含 SubIFD 子图（多页或 RAW 容器），重建会丢失像素数据，已拒绝写入")
+            # Per-page EXIF/GPS directories of later pages cannot be re-linked
+            # either, so refuse rather than silently dropping them.
+            for name in ("IFD1", "IFD2", "IFD3"):
+                ifd = self.ifds.get(name)
+                if ifd is not None and (0x8769 in ifd.entries or 0x8825 in ifd.entries):
+                    raise TiffError(
+                        "%s 含独立 EXIF/GPS 子目录，重建会丢失，已拒绝写入" % name)
+        else:
+            for name in list(self.ifds):
+                ifd = self.ifds[name]
+                for tag in list(ifd.entries):
+                    if tag in UNSAFE_TAGS:
+                        self.warnings.append("dropped unsupported tag %s" % UNSAFE_TAGS[tag])
+                        ifd.entries.pop(tag, None)
         if "EXIF" in self.ifds and "IFD0" not in self.ifds:
             raise TiffError("missing IFD0")
         if "IFD1" in self.ifds:
@@ -385,6 +449,35 @@ class Tiff:
                     ifd1.entries.pop(tag, None)
                 if not ifd1.entries:
                     del self.ifds["IFD1"]
+
+    def _image_payloads(self, source: bytes | None
+                        ) -> list[tuple[str, int, list[memoryview]]]:
+        """Collect every strip/tile range so a rewrite can copy it verbatim."""
+        wanted = [(name, pair) for name in PAGE_NAMES
+                  for pair in IMAGE_DATA_TAGS
+                  if name in self.ifds and pair[0] in self.ifds[name].entries]
+        if not wanted:
+            return []
+        if source is None:
+            raise TiffError("缺少原始图像数据，无法安全写入（拒绝重建）")
+        view = memoryview(source)
+        parts: list[tuple[str, int, list[memoryview]]] = []
+        for name, (off_tag, cnt_tag) in wanted:
+            ifd = self.ifds[name]
+            offsets = _as_int_list(ifd.get(off_tag))
+            counts = _as_int_list(ifd.get(cnt_tag))
+            if counts is None:
+                raise TiffError("%s 缺少 StripByteCounts/TileByteCounts，无法安全写入" % name)
+            if len(offsets) != len(counts):
+                raise TiffError("%s 的图像偏移与长度数量不一致，无法安全写入" % name)
+            chunks: list[memoryview] = []
+            for offset, length in zip(offsets, counts):
+                if length < 0 or offset < 0 or offset + length > len(view):
+                    raise TiffError("%s 的图像数据越界，无法安全写入" % name)
+                chunks.append(view[offset:offset + length])
+            if chunks:
+                parts.append((name, off_tag, chunks))
+        return parts
 
     # -- presentation ------------------------------------------------------
     def describe(self) -> list[dict[str, Any]]:
@@ -461,6 +554,16 @@ def _count_of(type_id: int, value: Any) -> int:
 def entry_from_value(tag: int, value: Any, type_id: int) -> Entry:
     count = _count_of(type_id, value)
     return Entry(tag, type_id, count, value, None, True)
+
+
+def _as_int_list(v: Any) -> list[int] | None:
+    if v is None:
+        return None
+    if isinstance(v, (list, tuple)):
+        return [int(x) for x in v]
+    if isinstance(v, (bytes, bytearray)):
+        return [int.from_bytes(v, "little")]
+    return [int(v)]
 
 
 def _as_int(v: Any) -> int:

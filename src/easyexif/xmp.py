@@ -199,7 +199,7 @@ class Xmp:
 def _new_packet(body: str, ns_attr: str) -> str:
     return (
         '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="EasyExif 0.1.1">\n'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="EasyExif 0.1.2">\n'
         ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
         '  <rdf:Description rdf:about=""%s%s>%s</rdf:Description>\n'
         ' </rdf:RDF>\n'

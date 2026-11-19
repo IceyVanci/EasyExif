@@ -33,7 +33,10 @@ def launch_pywebview(url: str, server=None, session=None, width: int = 1440,
                     webview.OPEN_DIALOG,
                     allow_multiple=True,
                     file_types=(
-                        "Images (*.jpg;*.jpeg;*.jpe;*.tif;*.tiff;*.exi;*.exif;*.dng;*.cr2;*.nef;*.arw)",
+                        "Images (*.jpg;*.jpeg;*.jpe;*.tif;*.tiff;*.exi;*.exif)",
+                        "RAW (*.dng;*.cr2;*.nef;*.nrw;*.arw;*.orf;*.rw2;*.pef;*.srw;"
+                        "*.raw;*.3fr;*.fff;*.iiq;*.mrw;*.erf;*.kdc;*.dcr;*.mef;"
+                        "*.mos;*.rwl;*.pxn)",
                         "All files (*.*)",
                     ),
                 )

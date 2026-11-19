@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from easyexif import Metadata
+from easyexif import Metadata, __version__
 from easyexif.webui.api import Api
 from easyexif.webui.server import WebUIServer
 from easyexif.webui.session import Session
@@ -66,7 +66,7 @@ class WebUITests(unittest.TestCase):
         self.assertIn(b'id="docTabs"', body)
         self.assertIn(b'id="readonlyBadge"', body)
         self.assertIn(b'id="appVersion"', body)
-        self.assertIn(b'v0.1.1', body)
+        self.assertIn(("v" + __version__).encode("ascii"), body)
         self.assertIn(b'validate-disclaimer', body)
         self.assertIn("不能证明图像未经编辑".encode("utf-8"), body)
         self.assertIn(b'id="btnExportBundle"', body)
@@ -86,7 +86,7 @@ class WebUITests(unittest.TestCase):
     def test_health_reports_version(self):
         status, _, body = self.request("GET", "/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["version"], "0.1.1")
+        self.assertEqual(json.loads(body)["version"], __version__)
 
     def test_auth(self):
         status, _, _ = self.request("GET", "/api/doc", token="")
@@ -235,7 +235,7 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(out.exists())
         meta = Metadata.read(out)
-        self.assertEqual(meta.get_text("IFD0.Software"), "EasyExif 0.1.1")
+        self.assertEqual(meta.get_text("IFD0.Software"), "EasyExif " + __version__)
 
     def test_two_documents_switch_and_close(self):
         while json.loads(self.request("GET", "/api/doc")[2])["doc"]["docs"]:

@@ -1,4 +1,4 @@
-# EasyExif 0.1.1
+# EasyExif 0.1.2
 
 一个用 Python 编写的开源 EXIF / XMP 元数据编辑器：无损读写 JPEG/TIFF 元数据、编辑 JPEG 段、解析厂商注释、GPS 坐标与坐标系转换、批量导出/重命名/分拣、元数据模板与文字戳，以及带 13 项检查的“原图可信度”报告。
 
@@ -7,7 +7,7 @@
 > 所有格式实现均基于公开规范（TIFF 6.0、EXIF 2.32、XMP、JPEG/ITU-T T.81）独立完成；
 > 不包含任何第三方私有代码、模板或特征库。
 
-当前版本：**0.1.1**。命令行与桌面界面使用同一版本号，Windows 单文件 exe 也写入 0.1.1 文件版本资源。
+当前版本：**0.1.2**。命令行与桌面界面使用同一版本号，Windows 单文件 exe 也写入 0.1.2 文件版本资源。
 
 ## 目录
 
@@ -31,7 +31,7 @@
 
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
-| EXIF/TIFF 读取与写回 | 已实现 | IFD0 / ExifIFD / GPS / Interop / IFD1，未知标签原样保留 |
+| EXIF/TIFF 读取与写回 | 已实现 | IFD0 / ExifIFD / GPS / Interop / 多页 IFD1–IFD3，未知标签原样保留；写回时逐字节保留原图像数据 |
 | JPEG 段查看/编辑 | 已实现 | APP0/1/2/13/14、COM、DQT/DHT/SOF/SOS，可增删段、十六进制查看 |
 | 无损元数据写入 | 已实现 | 不重新编码像素；熵编码扫描段按字节保留 |
 | XMP 读写 | 已实现 | 保留未知属性/命名空间，支持 Alt/Seq/Bag |
@@ -53,7 +53,7 @@
 | 时间平移/同步 | 已实现 | 支持按秒/天平移与 DateTime 同步 |
 | JSON 元数据包 | 已实现 | 导出/导入 EXIF、XMP、IPTC、MakerNote、缩略图；无空白模板 |
 | 元数据覆盖重建 | 已实现（受限） | 用户自带 JSON；不修改像素；强制写入 EasyExif 编辑标记 |
-| RAW 只读 | 已实现（首批） | DNG/CR2/NEF/ARW 等 TIFF-based RAW；不写回 |
+| RAW 只读 | 已实现 | DNG/CR2/NEF/NRW/ARW/ORF/RW2/PEF 等 TIFF-based RAW；不写回 |
 | Lensfun 镜头信息 | 可选 | 读取独立 Lensfun 数据包，做镜头匹配与焦段/光圈提示 |
 | 直方图 | 已实现 | Web 界面内绘制 |
 | 旋转/加噪/日期戳 | 未实现 | 属于像素编辑 |
@@ -105,7 +105,7 @@ dist/EasyExif.exe
 - 已改用固定 runtime 目录，不再依赖系统 TEMP，因此不会出现 Could not create temporary directory!
 - 若 AppData、用户目录和 TEMP 都被拒绝访问，程序会使用 exe 同目录 EasyExifData；请确保 exe 所在目录可写
 - 界面为真正的 WebView2 嵌入窗口，不经过 Edge 浏览器，因此没有账户同步、扩展或 AdBlock 弹窗
-- exe 的文件版本与产品版本均为 0.1.1
+- exe 的文件版本与产品版本均为 0.1.2
 
 构建命令见 packaging/build.ps1；若 PowerShell 执行策略阻止脚本，直接运行 packaging/build.cmd。
 
@@ -181,7 +181,7 @@ ExifIFDPointer 等结构指针默认隐藏。批处理为全屏覆盖层，支�
 - **上下文编辑提示**：双击标签打开编辑框时，提示会跟随当前标签变化，给出该标签的
   含义、输入格式和常用值（如方向、测光模式、色彩空间），并在输入时实时预览
   “将写入”的解析结果。
-- **版本标识**：标题栏显示当前版本 0.1.1，与 CLI 和 exe 资源版本一致。
+- **版本标识**：标题栏显示当前版本 0.1.2，与 CLI 和 exe 资源版本一致。
 
 ### Tkinter 旧界面（保留）
 
@@ -310,11 +310,32 @@ easyexif reconstruct target.jpg photo.metadata.json -o target.reconstructed.jpg
   和 `easyexif:*` 标记，显示由 EasyExif 编辑
 - 这是元数据覆盖，不是无痕原图伪造；标记可被其他工具删除
 
+## 写入安全
+
+写回只重建元数据表，像素数据原样搬运：
+
+- TIFF 写回时按原 StripOffsets/TileOffsets 与 ByteCounts 逐字节复制图像数据，
+  只重算偏移；无压缩、LZW、JPEG 压缩以及单页/多页 TIFF 的像素都保持不变
+- 含 SubIFD 子图的容器（多页扫描、RAW、DNG）无法安全搬移，直接**拒绝写入**
+- 缺少原始字节、图像偏移越界、或 TIFF 结构已损坏时同样拒绝写入，
+  不会写出一个只剩元数据的空壳文件
+- RAW 一律只读，NRW 等同 TIFF 容器的 RAW 不会掉进可写分支
+- JPEG 头部结构损坏（段长度错误、标记错位、段被截断）时，解析停在出错处并把
+  剩余字节原样保留为“尾段”，保存时整段写回；不改任何标签时输出与原文件逐字节一致
+- EXIF 数据损坏时文件仍可正常打开（元数据留空并给出警告），损坏段原样保留，
+  可用 strip 清除后再保存；IFD 链指向越界时只停止遍历，不再中断读取
+- 单个 JPEG 段上限 65533 字节；超出（过大的 XMP 或注释）会拒绝写入并给出提示，
+  不会写出结构错误或半截文件。大体积 XMP 需要的 Extended XMP 暂不支持
+
 ## RAW 只读与 Lensfun
 
-首批 RAW 采用只读模式：DNG、CR2、NEF、ARW 等 TIFF-based RAW。
+RAW 采用只读模式：DNG、CR2、NEF、NRW、ARW、ORF、RW2、PEF、SRW、3FR、
+IIQ、MRW、ERF、KDC、MEF、MOS、RWL 等 TIFF-based RAW。
 可读取 EXIF/GPS/MakerNote 和嵌入预览；不提供写回。DNG 已用样本验证，
-CR2/NEF/ARW 仍需更多真实样张回归。
+CR2/NEF/NRW 仍需更多真实样张回归。
+
+非 TIFF 容器（CR3、RAF、X3F、R3D 等）会明确报“暂不支持该 RAW 容器”，
+不会进入可写路径。
 
 ~~~bash
 easyexif lens photo.dng
@@ -334,7 +355,7 @@ Lensfun 数据通常为 CC BY-SA 3.0，需作为独立数据包保留署名和�
 ~~~text
 src/easyexif/
   tags.py       标签字典、类型、人类可读格式化
-  tiff.py       TIFF/EXIF 解析与重建（偏移重算、IFD 链、缩略图）
+  tiff.py       TIFF/EXIF 解析与重建（偏移重算、IFD 链、缩略图、图像数据搬运）
   makernote.py  厂商注释识别、字段解码、必要的偏移重编码
   jpeg.py       JPEG 段解析/重建、APP1/APP2/APP13、MPF、IPTC、量化表
   xmp.py        XMP 包解析与“定点替换”写入（保留未知内容）
@@ -369,14 +390,20 @@ src/easyexif/
 - **校验不是取证**。13 项检查基于文件结构与常见软件痕迹，能被有意的清洗/伪造绕过；
   报告中的 1–5 级只是启发式评分；没有 EXIF/TIFF 数据时只报告“未知”。
 - **厂商注释字典不完整**。只收录常用字段；未知字段仍会显示 tag 编号并原样保留。
-- **不解析 RAW 像素**。TIFF 容器可读写，但 CR2/NEF/ARW 等专有 RAW 结构未实现。
+  头部布局按公开规范实现（Canon、Sony、Nikon type 1/3、Fujifilm、Olympus、Pentax、
+  Apple、Samsung、Panasonic、DJI），并用构造样本回归；尚未逐家使用真机样张验证，
+  个别型号可能需要补充偏移变体。
+- **不解析 RAW 像素**。TIFF 容器可读写，但 CR2/NEF/ARW 等专有 RAW 结构未实现；
+  Nikon HE/HE★ 等新压缩 RAW 只在容器层面可读，未用真机样张回归。
 - **地图默认不联网**。gps --map 只生成链接；反向地理编码是显式可选调用。
 - **IPTC 只读**。APP13/IIM 可解析展示，写回未实现。
 - **XMP 写入是定点替换**。极端嵌套/重复属性可能需要人工检查。
 - **重建有边界**。只做用户自带 JSON 的元数据覆盖，不提供空白模板、不兼容 `.exi`、
   不修改像素；必须另存为新文件，并写入 EasyExif 编辑标记。
-- **RAW 只读**。当前不写回 RAW；CR2/NEF/ARW 的实际兼容性仍需更多样张验证。
+- **RAW 只读**。当前不写回 RAW；CR2/NEF/NRW 的实际兼容性仍需更多样张验证；
+  含 SubIFD 的容器与结构异常文件会被拒绝写入，宁可失败也不产出坏文件。
 - **Lensfun 可选**。没有数据包时只显示“未加载”，不会误报镜头范围。
+- **大体积 XMP 不支持**。单个 JPEG 段上限 64 KB，超出会拒绝写入；Extended XMP 未实现。
 - **编辑标记不是不可移除的**。其他工具仍可删除 `Software`/XMP 标记；EasyExif 只保证写入。
 
 ## 测试
@@ -390,7 +417,10 @@ python -m unittest discover -s tests -v
 厂商注释偏移重编码、GPS 转换、XMP 未知属性保留、模板占位符、13 项校验、CSV/重命名/分拣，
 以及 Web UI 的鉴权、打开/编辑/撤销/保存、预览、直方图、段、校验、批量接口、
 双图切换和上下文编辑提示，以及 JSON 元数据包、受限重建、RAW 只读和 Lensfun 匹配。
-共 60 个测试。
+另有写入安全回归：JPEG 段结构损坏时逐字节保留、超长段拒绝写入、TIFF 像素数据搬运、
+多页 TIFF、SubIFD 拒绝写入、IFD 链越界容错、损坏 EXIF 可打开并清理，
+以及 Nikon type 3 / Fujifilm / Olympus / Pentax 厂商注释头部布局。
+共 77 个测试。
 
 ## 界面截图
 

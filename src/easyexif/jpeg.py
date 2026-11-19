@@ -25,12 +25,20 @@ MARKER_NAMES = {
     0xEC: "APP12", 0xED: "APP13", 0xEE: "APP14", 0xEF: "APP15",
     0xFE: "COM",
 }
+# One JPEG segment stores its payload plus a two byte length field, so the
+# largest payload that still fits is 65533 bytes.
+MAX_SEGMENT = 0xFFFF - 2
+
 EXIF_HEADER = b"Exif\0\0"
 XMP_HEADER = b"http://ns.adobe.com/xap/1.0/\0"
 XMP_EXT_HEADER = b"http://ns.adobe.com/xmp/extension/\0"
 MPF_HEADER = b"MPF\0"
 ICC_HEADER = b"ICC_PROFILE\0"
 PS_HEADER = b"Photoshop 3.0\0"
+
+
+class JpegError(ValueError):
+    """Raised when a JPEG cannot be serialised without losing data."""
 
 
 @dataclass
@@ -82,6 +90,9 @@ class Jpeg:
     tail: bytes = b""
     warnings: list[str] = field(default_factory=list)
     trailing: bytes = b""
+    # True when parsing stopped on a malformed header; the untouched bytes are
+    # kept in tail so a rewrite can never shrink the file by accident.
+    damaged: bool = False
 
     # -- parsing -----------------------------------------------------------
     @classmethod
@@ -94,11 +105,13 @@ class Jpeg:
         while pos < len(data):
             if data[pos] != 0xFF:
                 obj.warnings.append("expected marker at 0x%X" % pos)
+                obj._keep_remainder(data, pos)
                 break
             start = pos
             while pos < len(data) and data[pos] == 0xFF:
                 pos += 1
             if pos >= len(data):
+                obj._keep_remainder(data, start)
                 break
             marker = data[pos]
             pos += 1
@@ -115,10 +128,12 @@ class Jpeg:
                 continue
             if pos + 2 > len(data):
                 obj.warnings.append("truncated segment at 0x%X" % start)
+                obj._keep_remainder(data, start)
                 break
             length = struct.unpack_from(">H", data, pos)[0]
             if length < 2 or pos + length > len(data):
                 obj.warnings.append("bad segment length at 0x%X" % start)
+                obj._keep_remainder(data, start)
                 break
             payload = data[pos + 2:pos + length]
             obj.segments.append(Segment(marker, payload, start, idx))
@@ -128,6 +143,11 @@ class Jpeg:
             obj.warnings.append("file ended before SOS/EOI")
         return obj
 
+    def _keep_remainder(self, data: bytes, start: int) -> None:
+        """Keep every byte we did not parse so a rewrite stays lossless."""
+        self.tail = data[start:]
+        self.damaged = True
+
     @classmethod
     def from_bytes(cls, data: bytes) -> "Jpeg":
         return cls.parse(data)
@@ -135,12 +155,19 @@ class Jpeg:
     def to_bytes(self) -> bytes:
         out = bytearray(b"\xff\xd8")
         for seg in self.segments:
+            if seg.marker not in (SOI, EOI) and len(seg.data) > MAX_SEGMENT:
+                raise JpegError(
+                    "%s 段为 %d 字节，超过单个 JPEG 段上限 %d 字节；请缩短内容"
+                    "（大体积 XMP 需要 Extended XMP，暂不支持）"
+                    % (MARKER_NAMES.get(seg.marker, "0x%02X" % seg.marker),
+                       len(seg.data), MAX_SEGMENT))
             out += b"\xff" + bytes([seg.marker])
             if seg.marker in (SOI, EOI):
                 continue
             out += struct.pack(">H", len(seg.data) + 2)
             out += seg.data
         out += self.tail if self.tail else b"\xff\xd9"
+        out += self.trailing
         return bytes(out)
 
     # -- segment helpers ---------------------------------------------------

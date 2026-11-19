@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import gps as gpsmod
-from .jpeg import Jpeg
+from .jpeg import Jpeg, JpegError
 from .tags import (ASCII, BYTE, LONG, RATIONAL, SHORT, SRATIONAL, UNDEFINED,
                    TYPE_NAMES, TYPE_SIZES, display_value, fnumber_to_apex,
                    format_value, is_technical, rational_to_float, resolve_name,
@@ -28,7 +28,16 @@ class MetadataError(RuntimeError):
 
 EXIF_DATE_FMT = "%Y:%m:%d %H:%M:%S"
 
-RAW_SUFFIXES = {".dng", ".cr2", ".nef", ".arw", ".orf", ".rw2", ".pef", ".srw", ".raw"}
+# TIFF-based RAW containers: we can read their metadata but never rewrite them.
+RAW_SUFFIXES = {
+    ".dng", ".cr2", ".nef", ".nrw", ".arw", ".orf", ".rw2", ".pef", ".srw",
+    ".raw", ".3fr", ".fff", ".iiq", ".mrw", ".erf", ".kdc", ".dcr", ".mef",
+    ".mos", ".rwl", ".pxn",
+}
+
+# RAW families whose container is not TIFF; reading them is not implemented and
+# they must never fall through to the writable TIFF path.
+UNSUPPORTED_RAW_SUFFIXES = {".cr3", ".raf", ".x3f", ".braw", ".nev", ".r3d"}
 
 
 def _find_embedded_jpeg(data: bytes) -> bytes | None:
@@ -102,6 +111,9 @@ class Metadata:
         self.readonly = False
         self.raw_format: str | None = None
         self.preview_data: bytes | None = None
+        # Original file bytes of a TIFF container, kept so a rewrite can copy
+        # the image payload back instead of dropping it.
+        self.source_data: bytes | None = None
 
     # -- reading -----------------------------------------------------------
     @classmethod
@@ -111,6 +123,9 @@ class Metadata:
         obj.raw_size = len(data)
         obj.mtime = obj.path.stat().st_mtime
         suffix = obj.path.suffix.lower()
+        if suffix in UNSUPPORTED_RAW_SUFFIXES:
+            raise MetadataError(
+                "暂不支持该 RAW 容器（当前仅支持 TIFF-based RAW，如 NEF/NRW/CR2/ARW/DNG）: %s" % path)
         if suffix in RAW_SUFFIXES:
             if data[:2] not in (b"II", b"MM"):
                 raise MetadataError("暂不支持该 RAW 容器（仅支持 TIFF-based RAW）: %s" % path)
@@ -130,7 +145,10 @@ class Metadata:
             obj.preview_data = _find_embedded_jpeg(data)
             return obj
         if data[:2] == b"\xff\xd8":
-            obj.jpeg = Jpeg.parse(data)
+            try:
+                obj.jpeg = Jpeg.parse(data)
+            except ValueError as exc:
+                raise MetadataError("无法解析 JPEG 结构: %s" % exc) from exc
             obj.warnings.extend(obj.jpeg.warnings)
             obj.info.format = "JPEG"
             dims = obj.jpeg.dimensions()
@@ -142,13 +160,21 @@ class Metadata:
                     obj.tiff = Tiff.parse(payload)
                     obj.warnings.extend(obj.tiff.warnings)
                 except TiffError as exc:
-                    raise MetadataError("cannot parse EXIF: %s" % exc) from exc
+                    # Keep the picture usable: the broken block is reported and
+                    # left untouched in the file so strip/repair can remove it.
+                    obj.tiff = None
+                    obj.warnings.append(
+                        "EXIF 数据损坏，已跳过解析：%s（可用 strip 清除该段）" % exc)
             packet = obj.jpeg.xmp_packet()
             if packet:
                 obj.xmp = Xmp(packet)
         elif data[:2] in (b"II", b"MM"):
             obj.info.format = "TIFF"
-            obj.tiff = Tiff.parse(data)
+            obj.source_data = data
+            try:
+                obj.tiff = Tiff.parse(data)
+            except TiffError as exc:
+                raise MetadataError("无法解析 TIFF 结构: %s" % exc) from exc
             obj.warnings.extend(obj.tiff.warnings)
             w, h = obj.tiff.get("IFD0", 0x0100), obj.tiff.get("IFD0", 0x0101)
             if isinstance(w, int) and isinstance(h, int):
@@ -174,13 +200,22 @@ class Metadata:
                 self.jpeg.set_xmp_packet(self.xmp.to_bytes())
             else:
                 self.jpeg.set_xmp_packet(None)
-            data = self.jpeg.to_bytes()
+            try:
+                data = self.jpeg.to_bytes()
+            except JpegError as exc:
+                raise MetadataError(str(exc)) from exc
         elif self.tiff is not None:
+            if not self.tiff.ifds.get("IFD0") or not self.tiff.ifds["IFD0"].entries:
+                raise MetadataError("TIFF 结构不完整或已损坏，已拒绝写入以免覆盖原文件")
             if self.xmp.exists:
                 self.tiff.set("IFD0", 0x02BC, self.xmp.to_bytes(), BYTE)
             else:
                 self.tiff.delete("IFD0", 0x02BC)
-            data = self.tiff.to_bytes()
+            try:
+                data = self.tiff.to_bytes(include_image=True,
+                                          image_source=self.source_data)
+            except TiffError as exc:
+                raise MetadataError(str(exc)) from exc
         else:
             raise MetadataError("nothing to save")
         if backup and target.exists():

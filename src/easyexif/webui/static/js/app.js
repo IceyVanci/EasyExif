@@ -9,7 +9,7 @@ const state = {
   metaScope: 'shooting',
   selected: null,
   mode: 'edit',
-  version: '0.1.1',
+  version: '0.1.2',
   reports: {},
   zoom: 1,
   fit: true,
